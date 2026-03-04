@@ -1,0 +1,11 @@
+{
+  "name": "@autolander/shared",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Shared utilities between cloud and desktop",
+  "main": "index.js",
+  "files": [
+    "*.js",
+    "feed-parsers/"
+  ]
+}

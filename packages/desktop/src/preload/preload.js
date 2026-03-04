@@ -1,0 +1,53 @@
+'use strict';
+
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('autolander', {
+  // Agent connection
+  agent: {
+    login: (opts) => ipcRenderer.invoke('agent:login', opts),
+    logout: () => ipcRenderer.invoke('agent:logout'),
+    getStatus: () => ipcRenderer.invoke('agent:get-status'),
+    getConfig: () => ipcRenderer.invoke('agent:get-config'),
+    onStatusUpdate: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on('agent:status-update', listener);
+      return () => ipcRenderer.removeListener('agent:status-update', listener);
+    },
+  },
+
+  // Facebook operations
+  fb: {
+    login: () => ipcRenderer.invoke('fb:login'),
+    getStatus: () => ipcRenderer.invoke('fb:get-status'),
+    postVehicle: (opts) => ipcRenderer.invoke('fb:post-vehicle', opts),
+    checkInbox: () => ipcRenderer.invoke('fb:check-inbox'),
+    sendMessage: (opts) => ipcRenderer.invoke('fb:send-message', opts),
+    startAssistedPost: (opts) => ipcRenderer.invoke('fb:start-assisted-post', opts),
+    cancelAssistedPost: () => ipcRenderer.invoke('fb:cancel-assisted-post'),
+    onProgress: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on('fb:progress', listener);
+      return () => ipcRenderer.removeListener('fb:progress', listener);
+    },
+    onFrame: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on('fb:frame', listener);
+      return () => ipcRenderer.removeListener('fb:frame', listener);
+    },
+  },
+
+  // Auto-updates
+  updates: {
+    onAvailable: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on('update:available', listener);
+      return () => ipcRenderer.removeListener('update:available', listener);
+    },
+    onDownloaded: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on('update:downloaded', listener);
+      return () => ipcRenderer.removeListener('update:downloaded', listener);
+    },
+  },
+});

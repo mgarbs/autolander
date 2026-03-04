@@ -1,0 +1,23 @@
+{
+  "name": "autolander",
+  "private": true,
+  "version": "1.0.0",
+  "description": "AutoLander SaaS — Multi-tenant auto sales automation",
+  "workspaces": [
+    "packages/shared",
+    "packages/cloud",
+    "packages/desktop"
+  ],
+  "scripts": {
+    "cloud:dev": "npm run dev -w packages/cloud",
+    "cloud:start": "npm run start -w packages/cloud",
+    "desktop:dev": "npm run dev -w packages/desktop",
+    "desktop:build": "npm run build -w packages/desktop",
+    "prisma:generate": "npx prisma generate --schema=packages/cloud/prisma/schema.prisma",
+    "prisma:migrate": "npx prisma migrate dev --schema=packages/cloud/prisma/schema.prisma",
+    "prisma:push": "npx prisma db push --schema=packages/cloud/prisma/schema.prisma"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

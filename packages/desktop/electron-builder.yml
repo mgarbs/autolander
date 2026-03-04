@@ -1,0 +1,32 @@
+appId: com.autolander.desktop
+productName: AutoLander
+copyright: Copyright © 2024 AutoLander
+directories:
+  output: release
+  buildResources: build
+files:
+  - src/main/**/*
+  - src/preload/**/*
+  - src/renderer/dist/**/*
+  - src/worker/**/*
+  - lib/**/*
+  - node_modules/**/*
+  - package.json
+extraResources:
+  - from: src/renderer/dist
+    to: renderer
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+publish:
+  provider: github
+  owner: autolander
+  repo: autolander

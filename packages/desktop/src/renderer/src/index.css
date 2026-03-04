@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-surface-950 text-surface-200 antialiased;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-surface-900/50 backdrop-blur-md border border-surface-800/50 shadow-glass rounded-2xl;
+  }
+  .glow-border {
+    @apply relative after:absolute after:inset-0 after:rounded-[inherit] after:border after:border-brand-500/20 after:shadow-glow-blue;
+  }
+  .premium-gradient-bg {
+    @apply bg-surface-950 relative overflow-hidden;
+    background: radial-gradient(circle at 0% 0%, #173d8015 0%, transparent 40%),
+                radial-gradient(circle at 100% 100%, #2665ff10 0%, transparent 40%);
+  }
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-surface-900;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-surface-700 rounded-full hover:bg-surface-600 transition-colors;
+}
+
+.page-transition {
+  animation: fadeIn 0.4s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}

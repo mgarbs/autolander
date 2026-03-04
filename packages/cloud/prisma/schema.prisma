@@ -1,0 +1,346 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  AGENT
+}
+
+enum VehicleStatus {
+  ACTIVE
+  SOLD
+  ARCHIVED
+}
+
+enum ConversationState {
+  NEW
+  ENGAGED
+  NEGOTIATING
+  APPOINTMENT_SET
+  CLOSED_WON
+  CLOSED_LOST
+  STALE
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum AgentConnectionStatus {
+  ONLINE
+  OFFLINE
+  BUSY
+}
+
+enum PlanTier {
+  SOLO
+  PRO
+  TEAM
+  DEALER
+}
+
+enum FeedType {
+  CARGURUS
+  CARSCOM
+  AUTOTRADER
+  GENERIC_XML
+  HTML_SCRAPE
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  address   String?
+  phone     String?
+  plan      PlanTier @default(SOLO)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users            User[]
+  vehicles         Vehicle[]
+  conversations    Conversation[]
+  appointments     Appointment[]
+  dealerConfigs    DealerConfig[]
+  schedulerStates  SchedulerState[]
+  agentConnections AgentConnection[]
+  activityLogs     ActivityLog[]
+  inventoryFeeds   InventoryFeed[]
+  settings         OrgSettings?
+}
+
+model User {
+  id             String   @id @default(uuid())
+  orgId          String
+  username       String
+  displayName    String
+  role           UserRole @default(AGENT)
+  passwordHash   String
+  salespersonId  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  org              Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  conversations    Conversation[]
+  appointments     Appointment[]
+  agentConnections AgentConnection[]
+  refreshTokens    RefreshToken[]
+  activityLogs     ActivityLog[]
+
+  @@unique([orgId, username])
+  @@index([orgId])
+}
+
+model Vehicle {
+  id                   String        @id @default(uuid())
+  orgId                String
+  vin                  String
+  year                 Int
+  make                 String
+  model                String
+  trim                 String?
+  price                Float?
+  mileage              Int?
+  color                String?
+  bodyStyle            String?
+  transmission         String?
+  fuelType             String?
+  condition            String?
+  description          String?
+  photos               String[]
+  status               VehicleStatus @default(ACTIVE)
+  fbPosted             Boolean       @default(false)
+  fbPostDate           DateTime?
+  generatedTitle       String?
+  generatedDescription String?
+  dealerUrl            String?
+  feedId               String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  org           Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  feed          InventoryFeed?  @relation(fields: [feedId], references: [id])
+  conversations Conversation[]
+  appointments  Appointment[]
+  priceHistory  PriceHistory[]
+
+  @@unique([orgId, vin])
+  @@index([orgId])
+  @@index([orgId, status])
+}
+
+model Conversation {
+  id             String            @id @default(uuid())
+  orgId          String
+  agentId        String?
+  vehicleId      String?
+  buyerName      String
+  buyerId        String?
+  state          ConversationState @default(NEW)
+  leadScore      Int               @default(20)
+  sentimentScore Float?
+  lastMessageAt  DateTime?
+  archivedAt     DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent    User?        @relation(fields: [agentId], references: [id])
+  vehicle  Vehicle?     @relation(fields: [vehicleId], references: [id])
+  messages Message[]
+
+  @@index([orgId])
+  @@index([orgId, state])
+  @@index([orgId, leadScore])
+}
+
+model Message {
+  id             String           @id @default(uuid())
+  conversationId String
+  direction      MessageDirection
+  text           String
+  intent         String?
+  metadata       Json?
+  createdAt      DateTime         @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+}
+
+model Appointment {
+  id            String            @id @default(uuid())
+  orgId         String
+  agentId       String?
+  vehicleId     String?
+  buyerName     String
+  scheduledTime DateTime
+  status        AppointmentStatus @default(SCHEDULED)
+  notes         String?
+  googleEventId String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent   User?        @relation(fields: [agentId], references: [id])
+  vehicle Vehicle?     @relation(fields: [vehicleId], references: [id])
+
+  @@index([orgId])
+  @@index([orgId, scheduledTime])
+}
+
+model DealerConfig {
+  id            String   @id @default(uuid())
+  orgId         String
+  url           String
+  platform      String?
+  scrapeEnabled Boolean  @default(true)
+  schedule      Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+}
+
+model SchedulerState {
+  id          String   @id @default(uuid())
+  orgId       String   @unique
+  lastPostRun DateTime?
+  postsToday  Int      @default(0)
+  config      Json?
+  updatedAt   DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+}
+
+model AgentConnection {
+  id              String                @id @default(uuid())
+  orgId           String
+  userId          String
+  status          AgentConnectionStatus @default(OFFLINE)
+  fbSessionValid  Boolean               @default(false)
+  fbSessionExpiry DateTime?
+  lastHeartbeat   DateTime?
+  connectedAt     DateTime?
+  disconnectedAt  DateTime?
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@index([orgId])
+}
+
+model ActivityLog {
+  id        String   @id @default(uuid())
+  orgId     String
+  userId    String?
+  action    String
+  details   Json?
+  success   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User?        @relation(fields: [userId], references: [id])
+
+  @@index([orgId])
+  @@index([orgId, createdAt])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PriceHistory {
+  id            String   @id @default(uuid())
+  vehicleId     String
+  price         Float
+  previousPrice Float?
+  recordedAt    DateTime @default(now())
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId])
+}
+
+model InventoryFeed {
+  id               String    @id @default(uuid())
+  orgId            String
+  feedUrl          String
+  feedType         FeedType
+  name             String?
+  syncScheduleCron String    @default("0 */6 * * *")
+  enabled          Boolean   @default(true)
+  lastSyncAt       DateTime?
+  lastSyncStatus   String?
+  vehicleCount     Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  org      Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  syncLogs FeedSyncLog[]
+  vehicles Vehicle[]
+
+  @@index([orgId])
+}
+
+model FeedSyncLog {
+  id              String    @id @default(uuid())
+  feedId          String
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+  vehiclesFound   Int       @default(0)
+  vehiclesAdded   Int       @default(0)
+  vehiclesUpdated Int       @default(0)
+  error           String?
+
+  feed InventoryFeed @relation(fields: [feedId], references: [id], onDelete: Cascade)
+
+  @@index([feedId])
+}
+
+model OrgSettings {
+  id                String  @id @default(uuid())
+  orgId             String  @unique
+  googleCredentials Json?
+  googleToken       Json?
+  googleCalendarId  String?
+  gmailAddress      String?
+  gmailAppPassword  String?
+  twilioAccountSid  String?
+  twilioAuthToken   String?
+  twilioFromNumber  String?
+  timezone          String  @default("America/New_York")
+  operatingHours    Json?
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+}

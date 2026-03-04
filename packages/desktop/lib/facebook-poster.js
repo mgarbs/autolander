@@ -1,0 +1,1975 @@
+/**
+ * Facebook Marketplace Auto-Poster
+ *
+ * Automates posting vehicle listings to Facebook Marketplace using Puppeteer.
+ * Includes session management, human-like behavior, and anti-detection measures.
+ *
+ * Puppeteer 22+ compatible — no $x() XPath calls.
+ *
+ * FB Marketplace vehicle form layout (as of Feb 2026, en_GB locale):
+ *   DROPDOWNS (label[role="combobox"], NO aria-label, identified by textContent):
+ *     Vehicle type: Car/van, Motorcycle, Power sport, Motorhome/caravan, Trailer, Boat, Commercial/Industrial, Other
+ *     Year:         2027..1901
+ *     Make:         Acura, Alfa Romeo, ..., Toyota, Volkswagen, Volvo (66 options)
+ *     Body style:   Coupé, Van, Saloon, Hatchback, 4x4, Convertible, Estate, MPV/People carrier, Small car, Other
+ *     Exterior colour: Black, Blue, Brown, Gold, Green, Grey, Pink, Purple, Red, Silver, Orange, White, Yellow, Charcoal, Off white, Tan, Beige, Burgundy, Turquoise
+ *     Interior colour: (same as exterior)
+ *     Vehicle condition: Excellent, Very good, Good, Fair, Poor
+ *     Fuel type:    Diesel, Electric, Petrol, Flex, Hybrid, Plug-in hybrid, Other
+ *     Transmission: Manual transmission, Automatic transmission
+ *   TEXT INPUTS (input[type="text"], NO aria-label, identified by nearby <span>):
+ *     Model, Mileage, Price
+ *   TEXTAREA:   Description (no aria-label)
+ *   CHECKBOX:   Clean title (aria-label: "This vehicle has a clean title.")
+ *   FILE INPUTS: image (accept="image/*,..."), video (accept="video/*")
+ *   FLOW:       Progressive form (fields appear after Year→Make selected)
+ *               → Fill form → click "Next" → click "Publish"
+ *   PHOTOS:     Required (1–20), uploaded via hidden file input
+ *   OVERLAYS:   After photo upload, FB shows notification + photo tips dialogs — must dismiss
+ *
+ * ALL dropdowns are REQUIRED by FB. Defaults when user doesn't specify:
+ *   Body style → Saloon, Ext/Int colour → Black, Condition → Good,
+ *   Fuel type → Petrol, Transmission → Automatic transmission
+ */
+
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const Anthropic = require('@anthropic-ai/sdk');
+const fs = require('fs');
+const path = require('path');
+const http = require('http');
+const https = require('https');
+const { encryptCookies, decryptCookies } = require('./fb-crypto');
+
+// Add stealth plugin to avoid detection
+puppeteer.use(StealthPlugin());
+
+const DATA_DIR = process.env.AUTO_SALES_DATA_DIR || path.join(__dirname, '../data');
+const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
+const SCREENSHOTS_DIR = path.join(DATA_DIR, 'screenshots');
+const PHOTOS_DIR = path.join(DATA_DIR, 'photos');
+const LOG_DIR = path.join(DATA_DIR, 'logs');
+
+// Ensure directories exist
+[SESSIONS_DIR, SCREENSHOTS_DIR, PHOTOS_DIR, LOG_DIR].forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+});
+
+// --- File logger ---
+const LOG_FILE = path.join(LOG_DIR, 'fb-poster.log');
+let _logStream = null;
+
+function getLogStream() {
+  if (!_logStream) {
+    _logStream = fs.createWriteStream(LOG_FILE, { flags: 'a' });
+  }
+  return _logStream;
+}
+
+function log(sessionId, level, ...args) {
+  const ts = new Date().toISOString();
+  const prefix = sessionId ? `[${ts}] [${sessionId}]` : `[${ts}]`;
+  const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+  const line = `${prefix} [${level}] ${msg}`;
+  console.log(line);
+  try { getLogStream().write(line + '\n'); } catch (_) { /* ignore */ }
+}
+
+function logInfo(sessionId, ...args)  { log(sessionId, 'INFO', ...args); }
+function logWarn(sessionId, ...args)  { log(sessionId, 'WARN', ...args); }
+function logError(sessionId, ...args) { log(sessionId, 'ERROR', ...args); }
+
+/**
+ * Random delay to mimic human behavior
+ * @param {number} min - Minimum ms
+ * @param {number} max - Maximum ms
+ */
+async function humanDelay(min = 1000, max = 3000) {
+  const delay = Math.floor(Math.random() * (max - min + 1)) + min;
+  await new Promise(resolve => setTimeout(resolve, delay));
+}
+
+function normalizeUiText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/**
+ * Type text with human-like delays between keystrokes
+ * @param {object} page - Puppeteer page
+ * @param {string} selector - Input selector
+ * @param {string} text - Text to type
+ */
+async function humanType(page, selector, text) {
+  await page.click(selector);
+  await humanDelay(200, 500);
+
+  for (const char of text) {
+    await page.type(selector, char, { delay: Math.random() * 100 + 50 });
+  }
+}
+
+/**
+ * Move mouse in a human-like way before clicking
+ * @param {object} page - Puppeteer page
+ * @param {string} selector - Element selector
+ */
+async function humanClick(page, selector) {
+  const element = await page.$(selector);
+  if (!element) {
+    throw new Error(`Element not found: ${selector}`);
+  }
+
+  const box = await element.boundingBox();
+  if (!box) {
+    throw new Error(`Element not visible: ${selector}`);
+  }
+
+  // Move to element with some randomness
+  const x = box.x + box.width / 2 + (Math.random() * 10 - 5);
+  const y = box.y + box.height / 2 + (Math.random() * 10 - 5);
+
+  await page.mouse.move(x, y, { steps: Math.floor(Math.random() * 10) + 5 });
+  await humanDelay(100, 300);
+  await page.mouse.click(x, y);
+}
+
+/**
+ * Facebook Poster class
+ */
+class FacebookPoster {
+  constructor(options = {}) {
+    this.sid = `fb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    this.salespersonId = options.salespersonId;
+    this.headless = process.env.BROWSER_VISIBLE === 'true' ? false : (options.headless !== false);
+    this.slowMo = options.slowMo || 50;
+    this.browser = null;
+    this.browserPid = null;
+    this.page = null;
+    this.isLoggedIn = false;
+    this.isConnected = false;
+    this.debugPort = options.debugPort || process.env.CHROME_DEBUG_PORT || 9222;
+    this.sessionFile = path.join(SESSIONS_DIR, `${this.salespersonId || 'default'}_fb_session.json`);
+
+    // Rate limiting
+    this.postsToday = 0;
+    this.maxPostsPerDay = options.maxPostsPerDay || 5;
+    this.lastPostTime = null;
+    this.minPostInterval = options.minPostInterval || 2 * 60 * 60 * 1000; // 2 hours
+
+    logInfo(this.sid, `Constructor: headless=${this.headless} slowMo=${this.slowMo} salesperson=${this.salespersonId || 'default'}`);
+  }
+
+  log(...args)  { logInfo(this.sid, ...args); }
+  warn(...args) { logWarn(this.sid, ...args); }
+  err(...args)  { logError(this.sid, ...args); }
+
+  /**
+   * Fetch the WebSocket debugger URL from a running Chrome instance.
+   * @returns {string|null} WebSocket URL or null if Chrome isn't available
+   */
+  async _getDebuggerWSEndpoint() {
+    return new Promise((resolve) => {
+      const req = http.get(`http://localhost:${this.debugPort}/json/version`, { timeout: 3000 }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            resolve(json.webSocketDebuggerUrl || null);
+          } catch (_) {
+            resolve(null);
+          }
+        });
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+    });
+  }
+
+  /**
+   * Initialize browser.
+   * Tries to connect to an existing Chrome with remote debugging first.
+   * Falls back to launching a new browser instance if unavailable.
+   */
+  async init() {
+    this.log('Initializing browser...');
+
+    // --- Try connecting to existing Chrome ---
+    const wsEndpoint = await this._getDebuggerWSEndpoint();
+    if (wsEndpoint) {
+      try {
+        this.log(`Found Chrome debugger on port ${this.debugPort}, connecting...`);
+        this.browser = await puppeteer.connect({
+          browserWSEndpoint: wsEndpoint,
+          defaultViewport: null
+        });
+        this.isConnected = true;
+        this.isLoggedIn = true; // Real browser is already logged in
+
+        this.browser.on('disconnected', () => {
+          this.err('Browser DISCONNECTED — Chrome was closed externally');
+        });
+
+        this.page = await this.browser.newPage();
+        if (process.env.PROXY_USERNAME && process.env.PROXY_PASSWORD) {
+          await this.page.authenticate({
+            username: process.env.PROXY_USERNAME,
+            password: process.env.PROXY_PASSWORD
+          });
+        }
+        this.page.setDefaultNavigationTimeout(60000);
+
+        this.log('Connected to existing Chrome — using real browser session');
+        this.log('Skipping stealth/user-agent/cookie setup (real browser handles it)');
+        return this;
+      } catch (e) {
+        this.warn(`Failed to connect to Chrome on port ${this.debugPort}: ${e.message}`);
+        this.warn('Falling back to launching new browser...');
+      }
+    } else {
+      this.warn(`No Chrome debugger found on port ${this.debugPort}`);
+      this.warn('To use your real Chrome (recommended for FB): node cli.js chrome-debug');
+      this.warn('Falling back to launching new browser...');
+    }
+
+    // --- Fallback: launch new browser ---
+    const launchArgs = [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled',
+      '--window-size=1366,768'
+    ];
+    if (process.env.PROXY_URL) {
+      launchArgs.push(`--proxy-server=${process.env.PROXY_URL}`);
+      launchArgs.push('--ignore-certificate-errors');
+      console.log('[poster] Using residential proxy:', process.env.PROXY_URL);
+    }
+
+    // Use system chromium in Docker
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
+    this.log(`Launch config: headless=${this.headless} executablePath=${executablePath || 'bundled'}`);
+
+    this.browser = await puppeteer.launch({
+      headless: this.headless ? 'new' : false,
+      slowMo: this.slowMo,
+      executablePath,
+      args: launchArgs,
+      defaultViewport: {
+        width: 1366,
+        height: 768
+      }
+    });
+
+    // Track browser PID for debugging multiple instances
+    this.browserPid = this.browser.process()?.pid || null;
+    this.log(`Browser launched — PID=${this.browserPid}`);
+
+    // Listen for browser disconnect/crash
+    this.browser.on('disconnected', () => {
+      this.err(`Browser DISCONNECTED (PID=${this.browserPid}) — crashed or closed externally`);
+    });
+
+    this.page = await this.browser.newPage();
+    if (process.env.PROXY_USERNAME && process.env.PROXY_PASSWORD) {
+      await this.page.authenticate({
+        username: process.env.PROXY_USERNAME,
+        password: process.env.PROXY_PASSWORD
+      });
+    }
+    this.log('New page created');
+
+    // Log console messages from the page
+    this.page.on('pageerror', (error) => {
+      this.err(`Page JS error: ${error.message}`);
+    });
+
+    // Set realistic user agent
+    await this.page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    );
+
+    // Global navigation timeout
+    this.page.setDefaultNavigationTimeout(60000);
+
+    // Load saved cookies if available
+    await this.loadSession();
+
+    this.log('Browser initialized and ready');
+    return this;
+  }
+
+  /**
+   * Save session cookies
+   */
+  async saveSession() {
+    if (!this.page) return;
+    if (this.isConnected) return; // Real browser manages its own session
+
+    const cookies = await this.page.cookies();
+    const encrypted = encryptCookies(cookies);
+    const sessionData = {
+      ...encrypted,
+      savedAt: new Date().toISOString(),
+      validatedAt: new Date().toISOString(),
+      salespersonId: this.salespersonId,
+    };
+
+    fs.writeFileSync(this.sessionFile, JSON.stringify(sessionData, null, 2));
+    this.log('Session saved');
+  }
+
+  /**
+   * Load session cookies
+   */
+  async loadSession() {
+    if (!fs.existsSync(this.sessionFile)) {
+      this.log('No saved session found');
+      return false;
+    }
+
+    try {
+      const sessionData = JSON.parse(fs.readFileSync(this.sessionFile, 'utf8'));
+
+      // Check if session is recent (less than 7 days old)
+      const savedAt = new Date(sessionData.savedAt);
+      const daysSince = (Date.now() - savedAt.getTime()) / (1000 * 60 * 60 * 24);
+
+      if (daysSince > 7) {
+        this.log('Session expired, need fresh login');
+        return false;
+      }
+
+      const cookies = decryptCookies(sessionData);
+      await this.page.setCookie(...cookies);
+      this.log('Session loaded');
+      return true;
+    } catch (e) {
+      this.log('Failed to load session:', e.message);
+      return false;
+    }
+  }
+
+  /**
+   * Check if currently logged in
+   */
+  async checkLoginStatus() {
+    try {
+      await this.page.goto('https://www.facebook.com', { waitUntil: 'networkidle2' });
+      await humanDelay(2000, 4000);
+
+      // Check for login form vs user menu
+      const loginForm = await this.page.$('input[name="email"]');
+      const userMenu = await this.page.$('[aria-label="Your profile"]');
+
+      this.isLoggedIn = !loginForm && !!userMenu;
+      this.log(` Login status: ${this.isLoggedIn ? 'logged in' : 'not logged in'}`);
+
+      return this.isLoggedIn;
+    } catch (e) {
+      this.err('Error checking login status:', e.message);
+      return false;
+    }
+  }
+
+  /**
+   * Login to Facebook
+   * @param {string} email - Facebook email
+   * @param {string} password - Facebook password
+   */
+  async login(email, password) {
+    this.log('Attempting login...');
+
+    await this.page.goto('https://www.facebook.com/login', { waitUntil: 'networkidle2' });
+    await humanDelay(2000, 4000);
+
+    // Enter email
+    await humanType(this.page, '#email', email);
+    await humanDelay(500, 1000);
+
+    // Enter password
+    await humanType(this.page, '#pass', password);
+    await humanDelay(500, 1000);
+
+    // Click login button
+    await humanClick(this.page, 'button[name="login"]');
+
+    // Wait for navigation or 2FA prompt
+    await this.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch(() => { });
+    await humanDelay(3000, 5000);
+
+    // Check for 2FA
+    const twoFactorInput = await this.page.$('input[name="approvals_code"]');
+    if (twoFactorInput) {
+      this.log('2FA required - waiting for manual entry...');
+      await this.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 120000 }).catch(() => { });
+    }
+
+    // Verify login succeeded
+    this.isLoggedIn = await this.checkLoginStatus();
+
+    if (this.isLoggedIn) {
+      await this.saveSession();
+      this.log('Login successful');
+    } else {
+      this.err('Login failed');
+    }
+
+    return this.isLoggedIn;
+  }
+
+  /**
+   * Find a clickable element by its visible text content.
+   * Puppeteer 22+ compatible — uses evaluateHandle instead of $x().
+   * @param {string} text - Text to search for (case-insensitive partial match)
+   * @param {string} tag - Optional CSS tag filter (e.g., 'span', 'div')
+   * @returns {ElementHandle|null}
+   */
+  async findByText(text, tag = '*') {
+    const el = await this.page.evaluateHandle((searchText, tagFilter) => {
+      const lower = searchText.toLowerCase();
+      const elements = document.querySelectorAll(tagFilter);
+      for (const el of elements) {
+        const content = el.textContent?.trim().toLowerCase() || '';
+        if (content.includes(lower) && el.offsetParent !== null) {
+          return el;
+        }
+      }
+      return null;
+    }, text, tag);
+    return el && el.asElement() ? el.asElement() : null;
+  }
+
+  /**
+   * Find an input/textarea near a label with the given text.
+   * Uses multiple strategies for resilience against DOM changes.
+   *
+   * FB Marketplace (2026) DOM structure:
+   *   Dropdowns  → <label role="combobox"> with textContent "Year", "Make" etc (NO aria-label)
+   *   Text inputs → <input type="text"> with NO aria-label, NO placeholder, identified
+   *                 by nearby <span> ancestors containing "Model", "Price", "Mileage"
+   *   Textarea    → <textarea> near <span> "Description"
+   *
+   * @param {string} labelText - Label text to search for
+   * @returns {ElementHandle|null}
+   */
+  async findFieldByLabel(labelText) {
+    // Strategy 1: exact aria-label
+    let el = await this.page.$(`[aria-label="${labelText}"]`);
+    if (el) {
+      this.log(`   Found "${labelText}" via aria-label`);
+      return el;
+    }
+
+    // Strategy 2: <label role="combobox"> whose textContent starts with the label
+    // FB uses <label role="combobox"> for dropdowns — the text is the label text (e.g. "Year", "MakeToyota")
+    el = await this.page.evaluateHandle((text) => {
+      const labels = document.querySelectorAll('label[role="combobox"]');
+      const lower = text.toLowerCase();
+      for (const label of labels) {
+        if (label.offsetParent === null) continue;
+        const content = label.textContent?.trim().toLowerCase() || '';
+        // Match if textContent starts with label OR equals it (before any selected value)
+        if (content === lower || content.startsWith(lower)) return label;
+      }
+      return null;
+    }, labelText);
+    if (el && el.asElement()) {
+      this.log(`   Found "${labelText}" via label[role=combobox] textContent`);
+      return el.asElement();
+    }
+
+    // Strategy 3: aria-label case-insensitive partial match
+    el = await this.page.evaluateHandle((text) => {
+      const all = document.querySelectorAll('input, textarea, select, [role="combobox"], [role="textbox"], [contenteditable="true"]');
+      for (const el of all) {
+        const label = el.getAttribute('aria-label') || '';
+        if (label.toLowerCase().includes(text.toLowerCase())) return el;
+      }
+      return null;
+    }, labelText);
+    if (el && el.asElement()) {
+      this.log(`   Found "${labelText}" via aria-label partial match`);
+      return el.asElement();
+    }
+
+    // Strategy 4: Find by placeholder text
+    el = await this.page.evaluateHandle((text) => {
+      const all = document.querySelectorAll('input, textarea');
+      for (const el of all) {
+        const ph = el.getAttribute('placeholder') || '';
+        if (ph.toLowerCase().includes(text.toLowerCase())) return el;
+      }
+      return null;
+    }, labelText);
+    if (el && el.asElement()) {
+      this.log(`   Found "${labelText}" via placeholder`);
+      return el.asElement();
+    }
+
+    // Strategy 5: Find nearby <span> text, walk up to find the input/textarea
+    // FB puts label text in <span> siblings near the input
+    el = await this.page.evaluateHandle((text) => {
+      const lower = text.toLowerCase();
+      const spans = document.querySelectorAll('span');
+      for (const span of spans) {
+        const t = span.textContent?.trim().toLowerCase();
+        if (t !== lower) continue;
+        if (span.offsetParent === null) continue;
+        // Walk up from span to find a sibling input/textarea
+        let parent = span.parentElement;
+        for (let i = 0; i < 6; i++) {
+          if (!parent) break;
+          const input = parent.querySelector('input[type="text"], textarea');
+          if (input && input.offsetParent !== null) {
+            // Verify this input doesn't already have a known role (like Search)
+            const ariaLabel = input.getAttribute('aria-label') || '';
+            if (!ariaLabel.includes('Search') && !ariaLabel.includes('Location')) {
+              return input;
+            }
+          }
+          parent = parent.parentElement;
+        }
+      }
+      return null;
+    }, labelText);
+    if (el && el.asElement()) {
+      this.log(`   Found "${labelText}" via span-context walk`);
+      return el.asElement();
+    }
+
+    // Strategy 6: TreeWalker fallback (original approach)
+    el = await this.page.evaluateHandle((text) => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        if (walker.currentNode.textContent.trim().toLowerCase().includes(text.toLowerCase())) {
+          let parent = walker.currentNode.parentElement;
+          for (let i = 0; i < 6; i++) {
+            if (!parent) break;
+            const input = parent.querySelector('input, textarea, [role="combobox"], [role="textbox"], [contenteditable="true"]');
+            if (input) return input;
+            parent = parent.parentElement;
+          }
+        }
+      }
+      return null;
+    }, labelText);
+    if (el && el.asElement()) {
+      this.log(`   Found "${labelText}" via text-walk`);
+      return el.asElement();
+    }
+
+    this.log(`   WARNING: Could not find field "${labelText}"`);
+    return null;
+  }
+
+  /**
+   * Determine the FB Marketplace vehicle type from user-provided vehicle data.
+   *
+   * FB vehicle types: Car/van, Motorcycle, Power sport, Motorhome/caravan,
+   *                   Trailer, Boat, Commercial/Industrial, Other
+   *
+   * @param {object} vehicle - Vehicle object
+   * @returns {string} FB vehicle type to select
+   */
+  resolveVehicleType(vehicle) {
+    // Explicit vehicle_type field takes priority
+    const vt = (vehicle.vehicle_type || '').toLowerCase().trim();
+    if (vt) {
+      const typeMap = {
+        // Car/van
+        'car': 'Car/van', 'car/van': 'Car/van', 'van': 'Car/van',
+        'sedan': 'Car/van', 'suv': 'Car/van', 'truck': 'Car/van',
+        'pickup': 'Car/van', 'coupe': 'Car/van', 'wagon': 'Car/van',
+        'hatchback': 'Car/van', 'convertible': 'Car/van', 'minivan': 'Car/van',
+        'crossover': 'Car/van', 'estate': 'Car/van', 'saloon': 'Car/van',
+        // Motorcycle
+        'motorcycle': 'Motorcycle', 'bike': 'Motorcycle', 'motorbike': 'Motorcycle',
+        // Power sport
+        'power sport': 'Power sport', 'powersport': 'Power sport',
+        'atv': 'Power sport', 'utv': 'Power sport', 'quad': 'Power sport',
+        'snowmobile': 'Power sport', 'jet ski': 'Power sport',
+        'side-by-side': 'Power sport', 'go-kart': 'Power sport',
+        'dirtbike': 'Power sport', 'dirt bike': 'Power sport',
+        'scooter': 'Power sport',
+        // Motorhome/caravan
+        'motorhome': 'Motorhome/caravan', 'caravan': 'Motorhome/caravan',
+        'motorhome/caravan': 'Motorhome/caravan', 'rv': 'Motorhome/caravan',
+        'camper': 'Motorhome/caravan', 'campervan': 'Motorhome/caravan',
+        // Trailer
+        'trailer': 'Trailer', 'flatbed': 'Trailer', 'utility trailer': 'Trailer',
+        'cargo trailer': 'Trailer', 'horse trailer': 'Trailer',
+        // Boat
+        'boat': 'Boat', 'yacht': 'Boat', 'pontoon': 'Boat', 'sailboat': 'Boat',
+        'kayak': 'Boat', 'canoe': 'Boat', 'jet boat': 'Boat',
+        // Commercial/Industrial
+        'commercial': 'Commercial/Industrial', 'industrial': 'Commercial/Industrial',
+        'commercial/industrial': 'Commercial/Industrial',
+        'box truck': 'Commercial/Industrial', 'dump truck': 'Commercial/Industrial',
+        'semi': 'Commercial/Industrial', 'tractor': 'Commercial/Industrial',
+        // Other
+        'other': 'Other'
+      };
+      if (typeMap[vt]) return typeMap[vt];
+    }
+
+    // Infer from body_style if no explicit type
+    const bs = (vehicle.body_style || '').toLowerCase();
+    if (['motorcycle', 'bike', 'motorbike'].includes(bs)) return 'Motorcycle';
+    if (['boat', 'yacht', 'pontoon'].includes(bs)) return 'Boat';
+    if (['rv', 'motorhome', 'camper', 'caravan'].includes(bs)) return 'Motorhome/caravan';
+    if (['trailer'].includes(bs)) return 'Trailer';
+
+    // Default: Car/van (most common)
+    return 'Car/van';
+  }
+
+  /**
+   * Match a vehicle color string to the closest Facebook Marketplace dropdown option
+   * using a Claude API call.
+   *
+   * FB colour options: Black, Blue, Brown, Gold, Green, Grey, Pink, Purple, Red,
+   *   Silver, Orange, White, Yellow, Charcoal, Off white, Tan, Beige, Burgundy, Turquoise
+   *
+   * @param {string} colorInput - The vehicle's color (e.g., "Oxford White", "Midnight Blue Metallic")
+   * @returns {string} The closest FB dropdown color value
+   */
+  async matchColorToFB(colorInput) {
+    if (!colorInput) return 'Black';
+
+    const fbColors = [
+      'Black', 'Blue', 'Brown', 'Gold', 'Green', 'Grey', 'Pink', 'Purple',
+      'Red', 'Silver', 'Orange', 'White', 'Yellow', 'Charcoal', 'Off white',
+      'Tan', 'Beige', 'Burgundy', 'Turquoise'
+    ];
+
+    // Check for exact match first (case-insensitive)
+    const exact = fbColors.find(c => c.toLowerCase() === colorInput.toLowerCase().trim());
+    if (exact) return exact;
+
+    // Fast local heuristic mapping (works without API keys)
+    const normalized = normalizeUiText(colorInput);
+    const colorKeywords = [
+      { key: 'off white', value: 'Off white' },
+      { key: 'charcoal', value: 'Charcoal' },
+      { key: 'burgundy', value: 'Burgundy' },
+      { key: 'turquoise', value: 'Turquoise' },
+      { key: 'beige', value: 'Beige' },
+      { key: 'tan', value: 'Tan' },
+      { key: 'silver', value: 'Silver' },
+      { key: 'gray', value: 'Grey' },
+      { key: 'grey', value: 'Grey' },
+      { key: 'white', value: 'White' },
+      { key: 'black', value: 'Black' },
+      { key: 'blue', value: 'Blue' },
+      { key: 'red', value: 'Red' },
+      { key: 'green', value: 'Green' },
+      { key: 'yellow', value: 'Yellow' },
+      { key: 'orange', value: 'Orange' },
+      { key: 'gold', value: 'Gold' },
+      { key: 'brown', value: 'Brown' },
+      { key: 'purple', value: 'Purple' },
+      { key: 'pink', value: 'Pink' },
+    ];
+    const heuristic = colorKeywords.find(c => normalized.includes(c.key));
+    if (heuristic) {
+      this.log(` Color heuristic match: "${colorInput}" -> "${heuristic.value}"`);
+      return heuristic.value;
+    }
+
+    if (!process.env.ANTHROPIC_API_KEY) {
+      this.log(` Color matching key not configured; defaulting "${colorInput}" to Black`);
+      return 'Black';
+    }
+
+    try {
+      const client = new Anthropic();
+      const response = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 20,
+        messages: [{
+          role: 'user',
+          content: `Vehicle color: "${colorInput}"\nFacebook options: ${fbColors.join(', ')}\n\nWhich single Facebook color option is the closest match? Reply with ONLY the color name, nothing else.`
+        }]
+      });
+      const match = response.content[0].text.trim();
+      // Validate the response is actually one of the FB options
+      const validated = fbColors.find(c => c.toLowerCase() === match.toLowerCase());
+      if (validated) {
+        this.log(` Color matched: "${colorInput}" → "${validated}"`);
+        return validated;
+      }
+      this.log(` Claude returned unexpected color "${match}", falling back to Black`);
+      return 'Black';
+    } catch (e) {
+      this.log(` Color matching API call failed: ${e.message}, falling back to Black`);
+      return 'Black';
+    }
+  }
+
+  /**
+   * Navigate to Facebook Marketplace create listing page and select the appropriate vehicle type.
+   * @param {object} vehicle - Vehicle object (used to determine vehicle type)
+   */
+  async goToCreateListing(vehicle = {}) {
+    this.log('Navigating to Marketplace...');
+
+    await this.page.goto('https://www.facebook.com/marketplace/create/vehicle', {
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    });
+
+    await humanDelay(2000, 4000);
+    await this.takeScreenshot('debug_01_page_loaded');
+
+    // Determine the right vehicle type
+    const targetType = this.resolveVehicleType(vehicle);
+    this.log(` Selecting vehicle type: ${targetType}...`);
+
+    const vehicleTypeDropdown = await this.findFieldByLabel('Vehicle type');
+    if (vehicleTypeDropdown) {
+      await vehicleTypeDropdown.click();
+      await humanDelay(1000, 2000);
+
+      // Find and click the matching option
+      const selected = await this.page.evaluate((target) => {
+        const lower = target.toLowerCase();
+        for (const o of document.querySelectorAll('[role="option"]')) {
+          const text = o.textContent?.trim() || '';
+          if (text.toLowerCase() === lower) {
+            o.click();
+            return text;
+          }
+        }
+        // Partial match fallback
+        for (const o of document.querySelectorAll('[role="option"]')) {
+          const text = o.textContent?.trim() || '';
+          if (text.toLowerCase().includes(lower) || lower.includes(text.toLowerCase())) {
+            o.click();
+            return text;
+          }
+        }
+        return null;
+      }, targetType);
+
+      if (selected) {
+        this._selectedVehicleType = selected;
+        this.log(` Selected vehicle type: "${selected}"`);
+      } else {
+        this.log(` WARNING: "${targetType}" not found, defaulting to first option`);
+        const first = await this.page.evaluate(() => {
+          const opt = document.querySelector('[role="option"]');
+          if (opt) { const t = opt.textContent?.trim(); opt.click(); return t; }
+          return null;
+        });
+        this._selectedVehicleType = first || 'Car/van';
+      }
+      await humanDelay(1500, 3000);
+    } else {
+      this._selectedVehicleType = 'Car/van';
+      this.log('Vehicle type dropdown not found (may already be set)');
+    }
+
+    await this.takeScreenshot('debug_02_vehicle_type_selected');
+
+    // Scroll down to reveal the form fields
+    await this.page.evaluate(() => window.scrollBy(0, 400));
+    await humanDelay(1000, 2000);
+
+    this.log('On create listing page');
+    return true;
+  }
+
+  /**
+   * Post a vehicle listing to Facebook Marketplace
+   * @param {object} vehicle - Vehicle with generated_content
+   * @returns {object} Result with success status and post URL
+   */
+  async postVehicle(vehicle) {
+    // Rate limiting check
+    if (this.postsToday >= this.maxPostsPerDay) {
+      return {
+        success: false,
+        error: 'Daily post limit reached',
+        postsToday: this.postsToday
+      };
+    }
+
+    if (this.lastPostTime) {
+      const timeSinceLastPost = Date.now() - this.lastPostTime;
+      if (timeSinceLastPost < this.minPostInterval) {
+        const waitMinutes = Math.ceil((this.minPostInterval - timeSinceLastPost) / 60000);
+        return {
+          success: false,
+          error: `Rate limited. Wait ${waitMinutes} minutes before next post.`,
+          nextPostTime: new Date(this.lastPostTime + this.minPostInterval).toISOString()
+        };
+      }
+    }
+
+    this.log(`=== START postVehicle: ${vehicle.year} ${vehicle.make} ${vehicle.model} (VIN=${vehicle.vin || 'none'}) ===`);
+    this.log(`  Price=${vehicle.price} Mileage=${vehicle.mileage || 'N/A'} Color=${vehicle.exterior_color || 'N/A'} Photos=${(vehicle.photos || []).length}`);
+
+    try {
+      // Ensure logged in
+      if (!this.isLoggedIn) {
+        const loggedIn = await this.checkLoginStatus();
+        if (!loggedIn) {
+          return { success: false, error: 'Not logged in. Run login() first.' };
+        }
+      }
+
+      // Auto-discover photos from data/photos/<VIN>/ if not already set
+      if ((!vehicle.photos || vehicle.photos.length === 0) && vehicle.vin) {
+        vehicle.photos = this.findPhotosForVehicle(vehicle.vin);
+      }
+
+      // Navigate to create listing
+      await this.goToCreateListing(vehicle);
+
+      // Upload photos FIRST (FB shows the photo upload area at the top, and it's required)
+      if (vehicle.photos && vehicle.photos.length > 0) {
+        await this.uploadPhotos(vehicle.photos);
+      } else {
+        this.log('WARNING: No photos found — FB requires at least 1 photo!');
+        this.log(` Put photos in: ${path.join(PHOTOS_DIR, vehicle.vin || 'VIN')}/`);
+      }
+
+      // Fill in vehicle details
+      await this.fillVehicleForm(vehicle);
+
+      // Review and get confirmation
+      const previewResult = await this.reviewListing(vehicle);
+
+      if (previewResult.needsConfirmation) {
+        this.log('Listing ready for review. Waiting for confirmation...');
+        return {
+          success: false,
+          status: 'pending_confirmation',
+          previewScreenshot: previewResult.screenshot,
+          message: 'Listing ready. Call confirmPost() to publish.'
+        };
+      }
+
+      // Publish (two-step: Next → Publish)
+      const postResult = await this.publishListing();
+
+      if (postResult.draft) {
+        // Form was filled but couldn't proceed — draft saved
+        return {
+          success: false,
+          status: 'draft_saved',
+          error: postResult.error,
+          draftScreenshot: postResult.screenshot,
+          missingFields: postResult.missingFields,
+          message: `Draft saved. ${postResult.error} DO NOT RETRY — fix the missing fields first.`
+        };
+      }
+
+      // Update tracking
+      this.postsToday++;
+      this.lastPostTime = Date.now();
+
+      this.log(`=== SUCCESS postVehicle: ${vehicle.year} ${vehicle.make} ${vehicle.model} → ${postResult.url || 'no URL'} ===`);
+      return {
+        success: true,
+        postUrl: postResult.url,
+        postId: postResult.id,
+        postedAt: new Date().toISOString(),
+        postsToday: this.postsToday
+      };
+
+    } catch (e) {
+      this.err(`=== FAILED postVehicle: ${vehicle.year} ${vehicle.make} ${vehicle.model} — ${e.message} ===`);
+      this.err(`Stack: ${e.stack}`);
+      await this.takeScreenshot('post_error_' + (vehicle.vin || 'unknown'));
+
+      return {
+        success: false,
+        error: e.message,
+        screenshot: `post_error_${vehicle.vin || 'unknown'}.png`,
+        message: 'Post failed. DO NOT RETRY automatically — check the error and screenshot.'
+      };
+    }
+  }
+
+  /**
+   * Find photos for a vehicle in data/photos/<VIN>/ directory
+   * @param {string} vin - Vehicle VIN
+   * @returns {string[]} Array of absolute file paths
+   */
+  findPhotosForVehicle(vin) {
+    const vinDir = path.join(PHOTOS_DIR, vin);
+    if (!fs.existsSync(vinDir)) {
+      return [];
+    }
+
+    const imageExts = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+    const photos = fs.readdirSync(vinDir)
+      .filter(f => imageExts.includes(path.extname(f).toLowerCase()))
+      .sort()
+      .map(f => path.join(vinDir, f));
+
+    if (photos.length > 0) {
+      this.log(` Found ${photos.length} photos in ${vinDir}`);
+    }
+
+    return photos;
+  }
+
+  /**
+   * Type into an input field with human-like behavior
+   * @param {ElementHandle} element - The input element
+   * @param {string} value - Value to type
+   */
+  async typeIntoField(element, value) {
+    await element.click({ clickCount: 3 }); // Select existing text
+    await humanDelay(200, 400);
+    await element.type(value.toString(), { delay: Math.random() * 50 + 30 });
+  }
+
+  /**
+   * Dismiss any overlay dialogs (notifications prompt, photo tips, etc.)
+   * that FB shows after photo upload or page load.
+   * These overlays block clicks on the form underneath.
+   */
+  async dismissOverlays() {
+    const dismissed = await this.page.evaluate(() => {
+      const closed = [];
+      // Close any visible dialogs by clicking their close/dismiss buttons
+      for (const dialog of document.querySelectorAll('[role="dialog"]')) {
+        if (dialog.offsetParent === null) continue;
+        // Look for close buttons: [aria-label="Close"], "Not now", "Close", "Skip", "X"
+        for (const btn of dialog.querySelectorAll('[role="button"], button, [aria-label="Close"]')) {
+          const text = btn.textContent?.trim().toLowerCase() || '';
+          const label = btn.getAttribute('aria-label')?.toLowerCase() || '';
+          if (label === 'close' || text === 'close' || text === 'not now' ||
+              text === 'skip' || text === 'x' || text === 'dismiss' ||
+              text === 'got it' || text === 'ok') {
+            btn.click();
+            closed.push(text || label);
+            break;
+          }
+        }
+      }
+      return closed;
+    });
+    if (dismissed.length > 0) {
+      this.log(` Dismissed overlays: ${dismissed.join(', ')}`);
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    // Press Escape as fallback to close any remaining overlays
+    await this.page.keyboard.press('Escape');
+    await new Promise(r => setTimeout(r, 300));
+
+    // Click the form area to ensure focus is on the form, not an overlay
+    await this.page.mouse.click(180, 400);
+    await new Promise(r => setTimeout(r, 300));
+  }
+
+  /**
+   * Fill in the vehicle listing form.
+   *
+   * Adapts dynamically to whichever vehicle type was selected — different types
+   * show different fields. Instead of hardcoding the Car/van layout, we detect
+   * which dropdowns/inputs are present on the page and fill them accordingly.
+   *
+   * Field presence by vehicle type (Feb 2026):
+   *   Car/van:              Year(dd), Make(dd), Model, Mileage, Price, Body style, Ext/Int colour, Condition, Fuel, Transmission, Clean title, Description
+   *   Motorcycle:           Year(dd), Make(dd/397), Model, Mileage, Price, Ext colour, Fuel, Transmission, Description
+   *   Power sport:          Year(dd), Make(text), Model, Price, Ext/Int colour, Fuel, Description
+   *   Motorhome/caravan:    Year(dd), Make(text), Model, Price, Ext/Int colour, Fuel, Description
+   *   Boat:                 Year(dd), Make(text), Model, Price, Ext/Int colour, Fuel, Description
+   *   Commercial/Industrial:Year(dd), Make(text), Model, Price, Ext/Int colour, Fuel, Description
+   *   Trailer:              Year(dd), Make(text), Model, Price, Ext/Int colour, Description
+   *   Other:                Year(dd), Make(text), Model, Price, Description
+   *
+   * @param {object} vehicle - Vehicle object
+   */
+  async fillVehicleForm(vehicle) {
+    this.log('Filling vehicle form...');
+    const vtype = this._selectedVehicleType || 'Car/van';
+    this.log(` Vehicle type: ${vtype}`);
+    let fieldsFound = 0;
+    let fieldsMissed = 0;
+
+    // Dismiss any overlay dialogs (notifications, photo tips) that block the form
+    await this.dismissOverlays();
+
+    // Detect which dropdowns are present on the page
+    const presentDropdowns = await this.page.evaluate(() => {
+      return [...document.querySelectorAll('label[role="combobox"]')]
+        .filter(l => l.offsetParent !== null)
+        .map(l => l.textContent?.trim().substring(0, 30));
+    });
+    this.log(` Dropdowns present: ${presentDropdowns.join(', ')}`);
+
+    // Value mappings (supports US + GB locale variants)
+    const bodyStyleMap = {
+      'sedan': ['Sedan', 'Saloon'],
+      'saloon': ['Saloon', 'Sedan'],
+      'suv': ['4x4', 'SUV', 'Estate'],
+      '4x4': ['4x4', 'SUV'],
+      'crossover': ['4x4', 'SUV', 'Estate'],
+      'coupe': ['Coupe'],
+      'convertible': ['Convertible'],
+      'wagon': ['Wagon', 'Estate'],
+      'estate': ['Estate', 'Wagon'],
+      'station wagon': ['Wagon', 'Estate'],
+      'van': ['Van'],
+      'hatchback': ['Hatchback'],
+      'minivan': ['Minivan', 'MPV/People carrier'],
+      'mpv': ['MPV/People carrier', 'Minivan'],
+      'pickup truck': ['Pickup truck', 'Truck', 'Other'],
+      'pickup': ['Pickup truck', 'Truck', 'Other'],
+      'truck': ['Truck', 'Pickup truck', 'Other'],
+      'small car': ['Small car', 'Compact'],
+      'compact': ['Compact', 'Small car']
+    };
+    const conditionMap = {
+      'new': ['New', 'Excellent'],
+      'like new': ['Like New', 'Excellent'],
+      'excellent': ['Excellent'],
+      'very good': ['Very good'],
+      'used': ['Good', 'Used - Good'],
+      'good': ['Good', 'Used - Good'],
+      'fair': ['Fair'],
+      'poor': ['Poor'],
+      'certified': ['Certified', 'Excellent'],
+      'certified pre-owned': ['Certified', 'Excellent']
+    };
+    const fuelMap = {
+      'gasoline': ['Gasoline', 'Petrol'],
+      'gas': ['Gasoline', 'Petrol'],
+      'petrol': ['Petrol', 'Gasoline'],
+      'diesel': ['Diesel'],
+      'electric': ['Electric'],
+      'hybrid': ['Hybrid'],
+      'plug-in hybrid': ['Plug-in hybrid'],
+      'flex': ['Flex', 'Other']
+    };
+    const transMap = {
+      'automatic': ['Automatic', 'Automatic transmission'],
+      'auto': ['Automatic', 'Automatic transmission'],
+      'cvt': ['Automatic', 'Automatic transmission'],
+      'continuously variable': ['Automatic', 'Automatic transmission'],
+      'continuously variable transmission': ['Automatic', 'Automatic transmission'],
+      'manual': ['Manual', 'Manual transmission'],
+      'stick': ['Manual', 'Manual transmission'],
+      'standard': ['Manual', 'Manual transmission']
+    };
+
+    const suvModelHints = [
+      'cherokee', 'grand cherokee', 'wrangler', 'compass', 'renegade',
+      'rav4', 'highlander', '4runner', 'cr-v', 'pilot', 'passport', 'hr-v',
+      'rogue', 'murano', 'pathfinder', 'kicks', 'escape', 'explorer', 'edge',
+      'bronco', 'equinox', 'traverse', 'tahoe', 'suburban', 'blazer',
+      'sorento', 'sportage', 'telluride', 'santa fe', 'palisade', 'tucson',
+      'cx-3', 'cx-30', 'cx-5', 'cx-9', 'outback', 'forester', 'ascent',
+      'x1', 'x3', 'x5', 'x7', 'glc', 'gle', 'qx50', 'qx60', 'q5', 'q7'
+    ];
+
+    // Helper: check if a dropdown label exists on the page (supports locale variants)
+    const hasDropdown = (...labels) => {
+      const normalizedLabels = labels.map(normalizeUiText);
+      return presentDropdowns.some(d => {
+        const normalizedValue = normalizeUiText(d);
+        return normalizedLabels.some(l => normalizedValue === l || normalizedValue.startsWith(l));
+      });
+    };
+
+    // --- DROPDOWN: Year (all types) ---
+    this.log('Setting Year...');
+    if (await this.selectDropdown('Year', vehicle.year.toString())) {
+      fieldsFound++;
+    } else { fieldsMissed++; }
+    await humanDelay(1000, 2000);
+
+    // --- MAKE ---
+    // Car/van and Motorcycle have Make as a dropdown; others have Make as text input
+    this.log('Setting Make...');
+    if (hasDropdown('Make')) {
+      // Dropdown Make (Car/van, Motorcycle)
+      if (await this.selectDropdown('Make', vehicle.make)) {
+        fieldsFound++;
+      } else { fieldsMissed++; }
+    } else {
+      // Text input Make (Power sport, Motorhome, Boat, Commercial, Trailer, Other)
+      const makeField = await this.findFieldByLabel('Make');
+      if (makeField) {
+        await this.typeIntoField(makeField, vehicle.make);
+        fieldsFound++;
+      } else { fieldsMissed++; }
+    }
+    await humanDelay(1000, 2000);
+
+    // --- TEXT INPUT: Model (all types) ---
+    this.log('Typing Model...');
+    const modelField = await this.findFieldByLabel('Model');
+    if (modelField) {
+      await this.typeIntoField(modelField, vehicle.model);
+      fieldsFound++;
+    } else { fieldsMissed++; }
+    await humanDelay(800, 1500);
+
+    await this.takeScreenshot('debug_03_after_year_make_model');
+
+    // --- TEXT INPUT: Mileage (Car/van and Motorcycle only) ---
+    if (vehicle.mileage) {
+      const mileageField = await this.findFieldByLabel('Mileage') ||
+                            await this.findFieldByLabel('Kilometres') ||
+                            await this.findFieldByLabel('Kilometers');
+      if (mileageField) {
+        this.log('Typing Mileage...');
+        await this.typeIntoField(mileageField, vehicle.mileage.toString());
+        fieldsFound++;
+      }
+      await humanDelay(500, 1000);
+    }
+
+    // Scroll down to reveal Price and more fields
+    await this.page.evaluate(() => window.scrollBy(0, 300));
+    await humanDelay(500, 1000);
+
+    // --- TEXT INPUT: Price (all types) ---
+    this.log('Typing Price...');
+    const priceField = await this.findFieldByLabel('Price');
+    if (priceField) {
+      await this.typeIntoField(priceField, vehicle.price.toString());
+      fieldsFound++;
+    } else { fieldsMissed++; }
+    await humanDelay(500, 1000);
+
+    await this.takeScreenshot('debug_04_after_price_mileage');
+
+    // Scroll down to reveal dropdowns
+    await this.page.evaluate(() => window.scrollBy(0, 300));
+    await humanDelay(500, 1000);
+
+    // --- DROPDOWN: Body style (Car/van only) ---
+    if (hasDropdown('Body style', 'Body type')) {
+      this.log('Setting Body style...');
+      const rawBody = vehicle.body_style || 'Sedan';
+      const normBody = normalizeUiText(rawBody);
+      let bodyVal = bodyStyleMap[normBody] || [rawBody];
+      const normDrive = normalizeUiText(vehicle.drivetrain || '');
+      const isLikely4x4 = normDrive.includes('4wd') || normDrive.includes('awd') || normDrive.includes('4x4');
+      const normModel = normalizeUiText(`${vehicle.make || ''} ${vehicle.model || ''}`);
+      const looksLikeSuvModel = suvModelHints.some(h => normModel.includes(h));
+      if (!bodyStyleMap[normBody]) {
+        if (normBody.includes('suv') || normBody.includes('crossover')) {
+          bodyVal = (isLikely4x4 || looksLikeSuvModel) ? ['4x4', 'SUV', 'Estate'] : ['4x4', 'SUV', 'Estate', 'Other'];
+        }
+        else if (normBody.includes('pickup') || normBody.includes('truck')) bodyVal = ['Truck', 'Pickup truck', 'Other'];
+        else if (normBody.includes('wagon')) bodyVal = ['Wagon', 'Estate'];
+      } else if (normBody.includes('suv') || normBody.includes('crossover')) {
+        bodyVal = (isLikely4x4 || looksLikeSuvModel) ? ['4x4', 'SUV', 'Estate'] : ['4x4', 'SUV', 'Estate', 'Other'];
+      }
+      if (await this.selectDropdown(['Body style', 'Body type'], bodyVal)) {
+        fieldsFound++;
+      } else { fieldsMissed++; }
+      await humanDelay(500, 1000);
+    }
+
+    // --- DROPDOWN: Exterior colour (most types except Other) ---
+    if (hasDropdown('Exterior colour', 'Exterior color')) {
+      this.log('Setting Exterior color...');
+      const extColor = await this.matchColorToFB(vehicle.exterior_color);
+      if (await this.selectDropdown(['Exterior colour', 'Exterior color'], extColor)) {
+        fieldsFound++;
+      } else { fieldsMissed++; }
+      await humanDelay(500, 1000);
+    }
+
+    // --- DROPDOWN: Interior colour (Car/van, Power sport, Motorhome, Trailer, Boat, Commercial) ---
+    if (hasDropdown('Interior colour', 'Interior color')) {
+      this.log('Setting Interior color...');
+      const intColor = await this.matchColorToFB(vehicle.interior_color);
+      if (await this.selectDropdown(['Interior colour', 'Interior color'], intColor)) {
+        fieldsFound++;
+      } else { fieldsMissed++; }
+      await humanDelay(500, 1000);
+    }
+
+    // Scroll down more
+    await this.page.evaluate(() => window.scrollBy(0, 300));
+    await humanDelay(500, 1000);
+
+    // --- CHECKBOX: Clean title (Car/van only) ---
+    const cleanTitleCheck = await this.page.$('[aria-label="This vehicle has a clean title."]');
+    if (cleanTitleCheck) {
+      const isChecked = await cleanTitleCheck.evaluate(el => el.checked);
+      if (!isChecked) {
+        this.log('Checking Clean title...');
+        await cleanTitleCheck.click();
+        await humanDelay(300, 600);
+      }
+    }
+
+    // --- DROPDOWN: Vehicle condition (Car/van only) ---
+    if (hasDropdown('Vehicle condition', 'Condition')) {
+      this.log('Setting Vehicle condition...');
+      const condVal = conditionMap[(vehicle.condition || 'used').toLowerCase()] || ['Good', 'Used - Good'];
+      if (await this.selectDropdown(['Vehicle condition', 'Condition'], condVal)) {
+        fieldsFound++;
+      } else { fieldsMissed++; }
+      await humanDelay(500, 1000);
+    }
+
+    // --- DROPDOWN: Fuel type (all except Trailer and Other) ---
+    if (hasDropdown('Fuel type')) {
+      this.log('Setting Fuel type...');
+      const rawFuel = vehicle.fuel_type || 'Petrol';
+      const fuelVal = fuelMap[rawFuel.toLowerCase()] || [rawFuel];
+      if (await this.selectDropdown('Fuel type', fuelVal)) {
+        fieldsFound++;
+      } else { fieldsMissed++; }
+      await humanDelay(500, 1000);
+    }
+
+    // --- DROPDOWN: Transmission (Car/van and Motorcycle) ---
+    if (hasDropdown('Transmission')) {
+      const rawTrans = vehicle.transmission || 'automatic';
+      const normTrans = normalizeUiText(rawTrans);
+      let transVal = transMap[normTrans] || [rawTrans];
+      if (!transMap[normTrans] && (normTrans.includes('continuously variable') || normTrans.includes('cvt'))) {
+        transVal = ['Automatic', 'Automatic transmission'];
+      }
+      this.log('Setting Transmission...');
+      if (await this.selectDropdown('Transmission', transVal)) {
+        fieldsFound++;
+      }
+      await humanDelay(500, 1000);
+    }
+
+    await this.takeScreenshot('debug_05_after_dropdowns');
+
+    // Scroll down for description
+    await this.page.evaluate(() => window.scrollBy(0, 300));
+    await humanDelay(500, 1000);
+
+    // --- TEXTAREA: Description (all types) ---
+    this.log('Typing Description...');
+    const descField = await this.findFieldByLabel('Description') ||
+                       await this.page.$('textarea');
+    if (descField) {
+      let desc = vehicle.generated_content?.description || vehicle.description || '';
+      if (!desc) {
+        const price = vehicle.price ? `$${Number(vehicle.price).toLocaleString()}` : 'Great price';
+        const miles = vehicle.mileage ? `${Number(vehicle.mileage).toLocaleString()} miles` : '';
+        const parts = [
+          `Clean ${vehicle.year || ''} ${vehicle.make || ''} ${vehicle.model || ''}`.trim(),
+          miles,
+          price,
+          'Financing available. Trade-ins welcome.',
+          vehicle.vin ? `VIN: ${vehicle.vin}` : '',
+        ].filter(Boolean);
+        desc = parts.join('\n');
+      }
+      this.log(` Description length: ${desc.length}`);
+      if (desc) {
+        await descField.click();
+        await humanDelay(300, 600);
+        for (let i = 0; i < desc.length; i += 50) {
+          const chunk = desc.slice(i, i + 50);
+          await descField.type(chunk, { delay: 10 });
+          await humanDelay(50, 150);
+        }
+        fieldsFound++;
+      }
+    } else { fieldsMissed++; }
+    await humanDelay(500, 1000);
+
+    // Scroll back up and take final screenshot
+    await this.page.evaluate(() => window.scrollTo(0, 0));
+    await humanDelay(500, 1000);
+    await this.takeScreenshot('debug_06_form_complete');
+
+    this.log(` Form filled — ${fieldsFound} fields set, ${fieldsMissed} missed`);
+  }
+
+  /**
+   * Select a dropdown option.
+   *
+   * FB Marketplace (2026) dropdowns are <label role="combobox"> elements.
+   * Clicking them opens a list of [role="option"] items.
+   *
+   * Uses the proven pattern from diagnostic scripts:
+   *   1. element.click() (not mouse.click — more reliable on FB labels)
+   *   2. flat delay (not waitForSelector chains that can timeout cumulatively)
+   *   3. single evaluateHandle call to find+click options (avoids stale refs)
+   *
+   * @param {string} label - Dropdown label (e.g., "Year", "Make")
+   * @param {string} value - Value to select
+   * @returns {boolean} Whether selection succeeded
+   */
+  async selectDropdown(label, value) {
+    try {
+      const labels = Array.isArray(label) ? label.filter(Boolean) : [label];
+      const values = (Array.isArray(value) ? value : [value])
+        .filter(v => v !== undefined && v !== null)
+        .map(v => String(v).trim())
+        .filter(Boolean);
+      if (labels.length === 0 || values.length === 0) {
+        return false;
+      }
+
+      // Close any previously open dropdown first
+      await this.page.keyboard.press('Escape');
+      await new Promise(r => setTimeout(r, 300));
+
+      // Find the dropdown element (supports alternate spellings/locale labels)
+      let dropdown = null;
+      let resolvedLabel = labels[0];
+      for (const candidateLabel of labels) {
+        dropdown = await this.findFieldByLabel(candidateLabel);
+        if (dropdown) {
+          resolvedLabel = candidateLabel;
+          break;
+        }
+      }
+      if (!dropdown) {
+        this.log(`   SKIP: Dropdown not found for labels ${JSON.stringify(labels)}`);
+        return false;
+      }
+
+      // Scroll element into view first
+      await dropdown.evaluate(el => el.scrollIntoView({ block: 'center' }));
+      await new Promise(r => setTimeout(r, 400));
+
+      // Click to open — use element.click() first (proven reliable in diagnostics),
+      // fall back to boundingBox mouse.click, then evaluate .click()
+      try {
+        await dropdown.click();
+      } catch (clickErr) {
+        try {
+          const box = await dropdown.boundingBox();
+          if (box) {
+            await this.page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+          } else {
+            await dropdown.evaluate(el => el.click());
+          }
+        } catch (e2) {
+          await dropdown.evaluate(el => el.click());
+        }
+      }
+
+      // Fixed delay — FB needs time to render the options popup
+      await new Promise(r => setTimeout(r, 1500));
+
+      // Try to find and click the matching option in a single page-context call
+      // This avoids race conditions from sequential $$() + evaluate() calls
+      const matched = await this.page.evaluate((candidateValues) => {
+        const normalize = (s) => (s || '')
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^a-z0-9]+/g, ' ')
+          .trim();
+        const candidates = candidateValues.map(normalize).filter(Boolean);
+        const options = document.querySelectorAll('[role="option"]');
+        const optionRows = [];
+        for (const o of options) {
+          const text = o.textContent?.trim() || '';
+          optionRows.push({ node: o, text, norm: normalize(text) });
+        }
+
+        // Pass 1: Exact match
+        for (const candidate of candidates) {
+          for (const row of optionRows) {
+            if (row.norm === candidate) {
+              row.node.click();
+              return { found: true, text: row.text, method: 'exact' };
+            }
+          }
+        }
+
+        // Pass 2: Partial/contains match
+        for (const candidate of candidates) {
+          for (const row of optionRows) {
+            if (row.norm.includes(candidate) || candidate.includes(row.norm)) {
+              row.node.click();
+              return { found: true, text: row.text, method: 'partial' };
+            }
+          }
+        }
+
+        // Collect first few options for debugging
+        const samples = [];
+        for (let i = 0; i < Math.min(optionRows.length, 8); i++) {
+          samples.push(optionRows[i].text.substring(0, 40));
+        }
+        return { found: false, total: optionRows.length, samples };
+      }, values);
+
+      if (matched.found) {
+        this.log(`   Selected "${resolvedLabel}" = "${matched.text}" (${matched.method})`);
+        await humanDelay(800, 1500);
+        return true;
+      }
+
+      if (matched.total > 0) {
+        this.log(`   ${matched.total} options visible but no match for ${JSON.stringify(values)}. Samples: ${JSON.stringify(matched.samples)}`);
+      }
+
+      // Fallback: type-to-search (works for searchable dropdowns like Year, Make)
+      for (const candidate of values) {
+        this.log(`   Trying type-to-search for "${candidate}"...`);
+        await this.page.keyboard.down('Control');
+        await this.page.keyboard.press('A');
+        await this.page.keyboard.up('Control');
+        await this.page.keyboard.press('Backspace');
+        await this.page.keyboard.type(candidate, { delay: 60 });
+        await new Promise(r => setTimeout(r, 1200));
+
+        const afterType = await this.page.evaluate((val) => {
+          const normalize = (s) => (s || '')
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim();
+          const target = normalize(val);
+          const options = document.querySelectorAll('[role="option"]');
+          for (const o of options) {
+            const text = o.textContent?.trim() || '';
+            const norm = normalize(text);
+            if (norm === target || norm.includes(target) || target.includes(norm)) {
+              o.click();
+              return { found: true, text };
+            }
+          }
+          const samples = [];
+          for (let i = 0; i < Math.min(options.length, 5); i++) {
+            samples.push(options[i].textContent?.trim().substring(0, 40));
+          }
+          return { found: false, total: options.length, samples };
+        }, candidate);
+
+        if (afterType.found) {
+          this.log(`   Selected "${resolvedLabel}" = "${afterType.text}" (type-to-search)`);
+          await humanDelay(800, 1500);
+          return true;
+        }
+
+        if (afterType.total > 0) {
+          this.log(`   After typing: ${afterType.total} options, samples: ${JSON.stringify(afterType.samples)}`);
+        }
+      }
+
+      // Close dropdown
+      await this.page.keyboard.press('Escape');
+      await new Promise(r => setTimeout(r, 300));
+      this.log(`   FAILED: Could not select labels=${JSON.stringify(labels)} values=${JSON.stringify(values)}`);
+      return false;
+
+    } catch (e) {
+      this.log(`   ERROR selecting dropdown ${JSON.stringify(label)}: ${e.message}`);
+      await this.page.keyboard.press('Escape').catch(() => {});
+      return false;
+    }
+  }
+
+  /**
+   * Upload photos to the listing.
+   *
+   * FB Marketplace (2026) uses React synthetic events — the hidden
+   * file input's uploadFile() doesn't trigger FB's handler.
+   * Instead, we click the "Add photos" button and use Puppeteer's
+   * fileChooser API to intercept the OS file dialog.
+   *
+   * @param {string[]} photoPaths - Array of absolute file paths to images
+   */
+  /**
+   * Download a remote photo URL to a local file
+   */
+  _downloadPhoto(url, destPath) {
+    return new Promise((resolve, reject) => {
+      const client = url.startsWith('https') ? https : http;
+      const request = (reqUrl, redirects = 0) => {
+        if (redirects > 5) return reject(new Error('Too many redirects'));
+        client.get(reqUrl, (res) => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            return request(res.headers.location, redirects + 1);
+          }
+          if (res.statusCode !== 200) {
+            res.resume();
+            return reject(new Error(`HTTP ${res.statusCode}`));
+          }
+          const stream = fs.createWriteStream(destPath);
+          res.pipe(stream);
+          stream.on('finish', () => { stream.close(); resolve(destPath); });
+          stream.on('error', reject);
+        }).on('error', reject);
+      };
+      request(url);
+    });
+  }
+
+  async uploadPhotos(photoPaths) {
+    this.log(` Uploading ${photoPaths.length} photo(s)...`);
+
+    // Resolve photos: download remote URLs to local files, keep existing local paths
+    const validPhotos = [];
+    for (let i = 0; i < photoPaths.length; i++) {
+      const p = photoPaths[i];
+      if (p.startsWith('http')) {
+        // Download to a temp file in PHOTOS_DIR
+        const ext = (p.match(/\.(jpe?g|png|webp)/i) || ['.jpg'])[0];
+        const localPath = path.join(PHOTOS_DIR, `_dl_${Date.now()}_${i}${ext.startsWith('.') ? ext : '.' + ext}`);
+        try {
+          await this._downloadPhoto(p, localPath);
+          this.log(`   Downloaded photo ${i + 1}: ${p.substring(0, 80)}...`);
+          validPhotos.push(localPath);
+        } catch (e) {
+          this.log(`   Failed to download photo: ${e.message}`);
+        }
+      } else if (fs.existsSync(p)) {
+        validPhotos.push(p);
+      } else {
+        this.log(`   Skipping missing file: ${p}`);
+      }
+    }
+
+    if (validPhotos.length === 0) {
+      this.log('No valid photos to upload');
+      return;
+    }
+
+    const toUpload = validPhotos.slice(0, 20);
+
+    // Strategy 1: Use fileChooser API (intercept the OS dialog)
+    // Click the "Add photos" area and catch the file chooser
+    try {
+      // Find the "Add photos" clickable area
+      const addPhotosArea = await this.page.evaluateHandle(() => {
+        // Look for the "Add photos" button/div
+        for (const el of document.querySelectorAll('[role="button"]')) {
+          const text = el.textContent?.trim().toLowerCase();
+          if (text && text.includes('add photo') && el.offsetParent !== null) return el;
+        }
+        return null;
+      });
+
+      if (addPhotosArea && addPhotosArea.asElement()) {
+        // Set up file chooser listener BEFORE clicking
+        const [fileChooser] = await Promise.all([
+          this.page.waitForFileChooser({ timeout: 5000 }),
+          addPhotosArea.asElement().click()
+        ]);
+
+        // Accept files through the file chooser
+        await fileChooser.accept(toUpload);
+        this.log(` Uploaded ${toUpload.length} photo(s) via file chooser`);
+
+        // Wait for photos to process
+        await humanDelay(5000, 10000);
+
+        // Verify upload succeeded
+        const photoCount = await this.page.evaluate(() => {
+          const text = document.body.innerText;
+          const match = text.match(/Photos?\s*\n?\s*[·:]\s*(\d+)/i);
+          return match ? parseInt(match[1]) : 0;
+        });
+
+        if (photoCount > 0) {
+          this.log(` Photo upload confirmed: ${photoCount} photo(s) showing`);
+        } else {
+          this.log('WARNING: Photo count still 0 after upload — checking for errors...');
+          // Check for error dialogs
+          const errorDialog = await this.page.evaluate(() => {
+            for (const d of document.querySelectorAll('[role="dialog"]')) {
+              const t = d.textContent?.trim();
+              if (t && (t.includes("Can't read") || t.includes("couldn't be uploaded"))) return t.substring(0, 200);
+            }
+            return null;
+          });
+          if (errorDialog) {
+            this.log(` Upload error: ${errorDialog}`);
+            // Close error dialog
+            const closeBtn = await this.page.$('[aria-label="Close"]');
+            if (closeBtn) { await closeBtn.click(); await humanDelay(500, 1000); }
+          }
+        }
+
+        await this.takeScreenshot('debug_photos_uploaded');
+        return;
+      }
+    } catch (e) {
+      this.log(` File chooser approach failed: ${e.message}`);
+    }
+
+    // Strategy 2: Fallback to direct uploadFile on hidden input
+    this.log('Falling back to direct file input upload...');
+    let fileInput = await this.page.$('input[type="file"][accept*="image"]');
+    if (!fileInput) {
+      fileInput = await this.page.$('input[type="file"]');
+    }
+
+    if (fileInput) {
+      await fileInput.uploadFile(...toUpload);
+      this.log(` Uploaded ${toUpload.length} photo(s) via file input`);
+      await humanDelay(5000, 10000);
+    } else {
+      this.log('WARNING: No upload mechanism found');
+    }
+
+    await this.takeScreenshot('debug_photos_uploaded');
+  }
+
+  /**
+   * Review the listing before publishing
+   * @param {object} vehicle - Vehicle object
+   * @returns {object} Review result
+   */
+  async reviewListing(vehicle) {
+    this.log('Reviewing listing...');
+
+    // Scroll to top for review screenshot
+    await this.page.evaluate(() => window.scrollTo(0, 0));
+    await humanDelay(500, 1000);
+    const screenshotPath = await this.takeScreenshot(`review_${vehicle.vin || 'unknown'}`);
+
+    // Auto-publish — confirmation is handled at the CLI/bot level
+    return {
+      needsConfirmation: false,
+      screenshot: screenshotPath
+    };
+  }
+
+  /**
+   * Two-step publish flow:
+   *   Step 1: Click "Next" button on the form page
+   *   Step 2: Click "Publish" button on the review page
+   *
+   * Puppeteer 22+ compatible — uses evaluateHandle instead of $x().
+   * @returns {object} Post result with URL
+   */
+  async publishListing() {
+    this.log('Publishing listing (Next → Publish)...');
+
+    // --- STEP 1: Click "Next" ---
+    await this.takeScreenshot('debug_07_pre_next');
+
+    // Scroll down to make Next button visible
+    await this.page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await humanDelay(1000, 2000);
+
+    const nextButton = await this._findButtonByText('Next');
+    if (!nextButton) {
+      await this.takeScreenshot('debug_next_button_not_found');
+      throw new Error('"Next" button not found on form page');
+    }
+
+    // Check if Next is disabled (FB disables it when required fields are missing)
+    const nextState = await nextButton.evaluate(el => ({
+      ariaDisabled: el.getAttribute('aria-disabled'),
+      cursor: window.getComputedStyle(el).cursor
+    }));
+    if (nextState.ariaDisabled === 'true' || nextState.cursor === 'not-allowed') {
+      // Check for validation alerts
+      const alerts = await this.page.evaluate(() => {
+        const a = [];
+        document.querySelectorAll('[role="alert"]').forEach(el => {
+          const t = el.textContent?.trim();
+          if (t) a.push(t);
+        });
+        return a;
+      });
+
+      // Check which required dropdowns are still unset
+      const missingFields = await this.page.evaluate(() => {
+        const missing = [];
+        for (const label of document.querySelectorAll('label[role="combobox"]')) {
+          if (label.offsetParent === null) continue;
+          const text = label.textContent?.trim() || '';
+          // If the dropdown text is JUST the label (no selected value appended), it's unset
+          if (['Year', 'Make', 'Body style', 'Body type', 'Exterior colour', 'Exterior color', 'Interior colour', 'Interior color', 'Vehicle condition', 'Condition', 'Fuel type'].includes(text)) {
+            missing.push(text);
+          }
+        }
+        // Check if photos are missing
+        const photoMatch = document.body.innerText.match(/Photos?\s*\n?\s*[·:]\s*(\d+)/i);
+        const photoCount = photoMatch ? parseInt(photoMatch[1]) : 0;
+        if (photoCount === 0) missing.unshift('Photos (required)');
+        return missing;
+      });
+
+      const alertText = alerts.length > 0 ? ` Validation: ${alerts.join('; ')}` : '';
+      const missingText = missingFields.length > 0 ? ` Missing: ${missingFields.join(', ')}` : '';
+      this.log(` "Next" button is disabled.${missingText}${alertText}`);
+
+      // Save draft screenshot
+      const draftScreenshot = await this.takeScreenshot('draft_saved');
+      this.log('Draft saved — form state preserved in screenshot');
+
+      // Return draft result instead of throwing (prevents retry loops)
+      return {
+        draft: true,
+        error: `Next button disabled.${missingText}${alertText}`,
+        missingFields,
+        screenshot: draftScreenshot
+      };
+    }
+
+    await this._clickElement(nextButton);
+    this.log('Clicked "Next" button');
+    await humanDelay(3000, 5000);
+
+    await this.takeScreenshot('debug_08_after_next');
+
+    // Wait for the review/publish page to load
+    await this.page.waitForFunction(
+      () => document.body.innerText.includes('Publish') || document.body.innerText.includes('publish'),
+      { timeout: 15000 }
+    ).catch(() => {
+      this.log('WARNING: "Publish" text not found after clicking Next');
+    });
+
+    await humanDelay(1000, 2000);
+
+    // --- STEP 2: Click "Publish" ---
+    await this.page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await humanDelay(500, 1000);
+
+    const publishButton = await this._findButtonByText('Publish');
+    if (!publishButton) {
+      await this.takeScreenshot('debug_publish_button_not_found');
+      throw new Error('"Publish" button not found on review page');
+    }
+
+    await this._clickElement(publishButton);
+    this.log('Clicked "Publish" button');
+    await humanDelay(3000, 5000);
+
+    await this.takeScreenshot('debug_09_after_publish');
+
+    // Wait for navigation or page update
+    await this.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => { });
+    await humanDelay(2000, 3000);
+
+    // Try to get the post URL
+    const currentUrl = this.page.url();
+    await this.takeScreenshot('debug_10_final_result');
+
+    this.log(` Final page URL: ${currentUrl}`);
+
+    return {
+      url: currentUrl,
+      id: this.extractPostId(currentUrl)
+    };
+  }
+
+  /**
+   * Find a button by its text content (no XPath/$x).
+   * Checks role="button" divs, <button> elements, and aria-label matches.
+   * @param {string} text - Button text to find
+   * @returns {ElementHandle|null}
+   */
+  async _findButtonByText(text) {
+    // Strategy 1: aria-label exact match
+    let btn = await this.page.$(`[aria-label="${text}"]`);
+    if (btn) {
+      this.log(`   Found "${text}" button via aria-label`);
+      return btn;
+    }
+
+    // Strategy 2: role="button" containing a span with the text
+    btn = await this.page.evaluateHandle((searchText) => {
+      const lower = searchText.toLowerCase();
+      // Check role="button" elements
+      const buttons = document.querySelectorAll('[role="button"], button');
+      for (const btn of buttons) {
+        const spans = btn.querySelectorAll('span');
+        for (const span of spans) {
+          if (span.textContent?.trim().toLowerCase() === lower) {
+            return btn;
+          }
+        }
+        // Also check direct text
+        if (btn.textContent?.trim().toLowerCase() === lower) {
+          return btn;
+        }
+      }
+      return null;
+    }, text);
+    if (btn && btn.asElement()) {
+      this.log(`   Found "${text}" button via text content`);
+      return btn.asElement();
+    }
+
+    // Strategy 3: broad text search
+    btn = await this.findByText(text, 'span');
+    if (btn) {
+      this.log(`   Found "${text}" button via findByText`);
+      return btn;
+    }
+
+    this.log(`   WARNING: Button "${text}" not found`);
+    return null;
+  }
+
+  /**
+   * Click an element handle reliably (boundingBox → mouse, fallback to .click())
+   * @param {ElementHandle} element
+   */
+  async _clickElement(element) {
+    const box = await element.boundingBox();
+    if (box) {
+      const x = box.x + box.width / 2 + (Math.random() * 4 - 2);
+      const y = box.y + box.height / 2 + (Math.random() * 4 - 2);
+      await this.page.mouse.click(x, y);
+    } else {
+      await element.click();
+    }
+  }
+
+  /**
+   * Extract post ID from URL
+   * @param {string} url - Post URL
+   * @returns {string|null} Post ID
+   */
+  extractPostId(url) {
+    const match = url.match(/\/item\/(\d+)/);
+    return match ? match[1] : null;
+  }
+
+  /**
+   * Take a screenshot for debugging/review
+   * @param {string} name - Screenshot name
+   * @returns {string} Screenshot path
+   */
+  async takeScreenshot(name) {
+    try {
+      const filename = `${name}_${Date.now()}.png`;
+      const filepath = path.join(SCREENSHOTS_DIR, filename);
+      const url = this.page.url();
+      await this.page.screenshot({ path: filepath, fullPage: true });
+      this.log(`Screenshot: ${filename} (url=${url})`);
+      return filepath;
+    } catch (e) {
+      this.err(`Screenshot failed (${name}): ${e.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Close browser
+   */
+  async close() {
+    if (this.browser) {
+      if (this.isConnected) {
+        // Connected mode: close our tab but leave Chrome running
+        this.log('Closing tab and disconnecting from Chrome...');
+        if (this.page) {
+          await this.page.close().catch(() => {});
+        }
+        this.browser.disconnect();
+        this.log('Disconnected from Chrome (browser stays open)');
+      } else {
+        // Launched mode: save session and close the browser we spawned
+        this.log(`Closing browser (PID=${this.browserPid})...`);
+        await this.saveSession().catch(() => {});
+        await this.browser.close();
+        this.log(`Browser closed (PID=${this.browserPid})`);
+      }
+      this.browser = null;
+      this.page = null;
+      this.browserPid = null;
+    } else {
+      this.log('close() called but no browser to close');
+    }
+  }
+
+  /**
+   * Get posting stats
+   */
+  getStats() {
+    return {
+      postsToday: this.postsToday,
+      maxPostsPerDay: this.maxPostsPerDay,
+      lastPostTime: this.lastPostTime ? new Date(this.lastPostTime).toISOString() : null,
+      nextPostAvailable: this.lastPostTime
+        ? new Date(this.lastPostTime + this.minPostInterval).toISOString()
+        : 'now',
+      isLoggedIn: this.isLoggedIn
+    };
+  }
+}
+
+/**
+ * Post multiple vehicles with rate limiting
+ * @param {array} vehicles - Array of vehicles to post
+ * @param {object} options - Poster options
+ * @returns {object} Results summary
+ */
+async function postBatch(vehicles, options = {}) {
+  const poster = new FacebookPoster(options);
+  await poster.init();
+
+  const results = {
+    successful: [],
+    failed: [],
+    skipped: []
+  };
+
+  for (const vehicle of vehicles) {
+    // Check if already posted
+    if (vehicle.listings?.facebook_marketplace?.posted) {
+      results.skipped.push({
+        vin: vehicle.vin,
+        reason: 'Already posted'
+      });
+      continue;
+    }
+
+    const result = await poster.postVehicle(vehicle);
+
+    if (result.success) {
+      results.successful.push({
+        vin: vehicle.vin,
+        postUrl: result.postUrl,
+        postedAt: result.postedAt
+      });
+    } else if (result.status === 'pending_confirmation') {
+      results.skipped.push({
+        vin: vehicle.vin,
+        reason: 'Awaiting confirmation',
+        screenshot: result.previewScreenshot
+      });
+    } else {
+      results.failed.push({
+        vin: vehicle.vin,
+        error: result.error
+      });
+    }
+
+    // Add extra delay between posts
+    await humanDelay(5000, 10000);
+  }
+
+  await poster.close();
+
+  return {
+    ...results,
+    summary: {
+      total: vehicles.length,
+      posted: results.successful.length,
+      failed: results.failed.length,
+      skipped: results.skipped.length
+    }
+  };
+}
+
+module.exports = {
+  FacebookPoster,
+  postBatch,
+  humanDelay
+};
