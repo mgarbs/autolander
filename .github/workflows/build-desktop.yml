@@ -40,6 +40,23 @@ jobs:
       - name: Install dependencies (desktop + shared only)
         run: npm install -w packages/shared -w packages/desktop
 
+      - name: Copy hoisted node_modules to desktop
+        shell: bash
+        run: |
+          # npm workspaces hoists deps to root node_modules
+          # electron-builder needs them in packages/desktop/node_modules
+          cp -r node_modules packages/desktop/node_modules_root
+          # Merge: root hoisted modules into desktop's node_modules
+          if [ -d packages/desktop/node_modules ]; then
+            cp -rn packages/desktop/node_modules_root/* packages/desktop/node_modules/ 2>/dev/null || true
+          else
+            mv packages/desktop/node_modules_root packages/desktop/node_modules
+          fi
+          rm -rf packages/desktop/node_modules_root
+          # Ensure shared package is available
+          mkdir -p packages/desktop/node_modules/@autolander
+          cp -r packages/shared packages/desktop/node_modules/@autolander/shared
+
       - name: Download Chrome for Puppeteer
         working-directory: packages/desktop
         run: npx puppeteer browsers install chrome

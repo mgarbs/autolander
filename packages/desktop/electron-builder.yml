@@ -1,6 +1,7 @@
 appId: com.autolander.desktop
 productName: AutoLander
 copyright: Copyright © 2024 AutoLander
+electronVersion: "28.3.3"
 asar: false
 directories:
   output: release
