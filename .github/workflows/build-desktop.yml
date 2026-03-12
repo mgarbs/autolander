@@ -63,9 +63,7 @@ jobs:
 
       - name: Build installer (${{ matrix.platform }})
         working-directory: packages/desktop
-        run: npx electron-builder --${{ matrix.platform }} --config electron-builder.yml
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --${{ matrix.platform }} --config electron-builder.yml --publish never
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
