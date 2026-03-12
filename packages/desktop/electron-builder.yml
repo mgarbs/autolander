@@ -1,6 +1,7 @@
 appId: com.autolander.desktop
 productName: AutoLander
 copyright: Copyright © 2024 AutoLander
+asar: false
 directories:
   output: release
   buildResources: build
@@ -15,6 +16,10 @@ files:
 extraResources:
   - from: src/renderer/dist
     to: renderer
+  - from: .chromium
+    to: chromium
+    filter:
+      - "**/*"
 win:
   target:
     - target: nsis
@@ -26,6 +31,23 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   deleteAppDataOnUninstall: false
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  icon: build/icon.icns
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  category: public.app-category.business
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  icon: build
+  category: Office
 publish:
   provider: github
   owner: autolander

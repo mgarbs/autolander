@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getFbAuthStatus, deleteFbSession, getDealerConfig, saveDealerConfig, triggerSync, getSyncProgress, getGoogleStatus, uploadGoogleCredentials, getGoogleAuthUrl, disconnectGoogle, saveGmailConfig } from '../api/client';
+import { getFbAuthStatus, deleteFbSession, getFeeds, createFeed, syncFeed, syncFeedHtml, saveGmailConfig, getEmailStatus, getDealerContact, saveDealerContact } from '../api/client';
 import {
   Settings as SettingsIcon,
   Facebook,
@@ -10,7 +10,6 @@ import {
   RefreshCw,
   LogOut,
   Clock,
-  Calendar,
   Key,
   Activity,
   Link2,
@@ -19,8 +18,8 @@ import {
   CheckCircle,
   AlertCircle,
   Mail,
-  Upload,
-  Unplug
+  MapPin,
+  Phone
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import Badge from '../components/Badge';
@@ -30,128 +29,67 @@ export default function Settings() {
   const [fbStatus, setFbStatus] = useState(null);
   const [disconnecting, setDisconnecting] = useState(false);
 
-  // Dealer / Inventory Feed state
+  // Inventory Feed state
   const [feedUrl, setFeedUrl] = useState('');
   const [dealerName, setDealerName] = useState('');
   const [autoGenerate, setAutoGenerate] = useState(true);
-  const [dealerConfig, setDealerConfig] = useState(null);
+  const [feeds, setFeeds] = useState([]);
+  const [activeFeed, setActiveFeed] = useState(null);
   const [feedSaving, setFeedSaving] = useState(false);
   const [feedSyncing, setFeedSyncing] = useState(false);
   const [feedMsg, setFeedMsg] = useState(null);
 
-  // Google Services state
-  const [googleStatus, setGoogleStatus] = useState(null);
-  const [googleMsg, setGoogleMsg] = useState(null);
+  // Email config state
+  const [emailStatus, setEmailStatus] = useState(null);
+  const [emailMsg, setEmailMsg] = useState(null);
   const [gmailAddress, setGmailAddress] = useState('');
   const [gmailAppPassword, setGmailAppPassword] = useState('');
   const [gmailSaving, setGmailSaving] = useState(false);
-  const [calConnecting, setCalConnecting] = useState(false);
 
-  const SYNC_STATE_KEY = 'autolander_sync_state';
-  const GOOGLE_OAUTH_HOSTS = new Set([
-    'accounts.google.com',
-    'oauth2.googleapis.com',
-  ]);
-
-  const isSafeGoogleAuthUrl = (value) => {
-    if (typeof value !== 'string') return false;
-    try {
-      const parsed = new URL(value);
-      return parsed.protocol === 'https:' && GOOGLE_OAUTH_HOSTS.has(parsed.hostname);
-    } catch {
-      return false;
-    }
-  };
+  // Dealer contact state
+  const [dealerAddress, setDealerAddress] = useState('');
+  const [salesPhone, setSalesPhone] = useState('');
+  const [contactSaving, setContactSaving] = useState(false);
+  const [contactMsg, setContactMsg] = useState(null);
 
   const loadStatus = () => getFbAuthStatus().then(setFbStatus).catch(() => {});
 
-  const loadDealerConfig = () =>
-    getDealerConfig()
-      .then(cfg => {
-        setDealerConfig(cfg);
-        const primary = (cfg.dealers || []).find(d => d.id === 'primary');
-        if (primary) {
-          setFeedUrl(primary.url || '');
-          setDealerName(primary.name || '');
-          setAutoGenerate(primary.options?.autoGenerate !== false);
+  const loadFeeds = () =>
+    getFeeds()
+      .then(res => {
+        const list = res.feeds || [];
+        setFeeds(list);
+        if (list.length > 0) {
+          const feed = list[0];
+          setActiveFeed(feed);
+          setFeedUrl(feed.feedUrl || '');
+          setDealerName(feed.name || '');
         }
-        return cfg;
       })
       .catch(() => {});
 
-  // Poll sync progress — works both for fresh syncs and resuming after navigation
-  const pollSyncProgress = async () => {
-    const INTERVAL = 1500;
-    const TIMEOUT = 300_000; // 5 minutes
-    const deadline = Date.now() + TIMEOUT;
-
-    while (Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, INTERVAL));
-      try {
-        const progress = await getSyncProgress();
-        if (!progress || progress.stage === 'idle') {
-          // Sync ended (progress file cleared or never existed) — check final result
-          await loadDealerConfig();
-          finishSync({ type: 'success', text: 'Sync complete' });
-          return;
-        }
-        // Show live progress message
-        if (progress.stage === 'complete') {
-          await loadDealerConfig();
-          finishSync({ type: 'success', text: progress.message });
-          return;
-        }
-        if (progress.stage === 'error') {
-          finishSync({ type: 'error', text: progress.message });
-          return;
-        }
-        // Still in progress — update the message
-        setFeedMsg({ type: 'info', text: progress.message });
-      } catch { /* keep polling */ }
-    }
-
-    finishSync({ type: 'error', text: 'Sync timed out — check server logs' });
-  };
-
-  const loadGoogleStatus = () =>
-    getGoogleStatus()
+  const loadEmailStatus = () =>
+    getEmailStatus()
       .then(s => {
-        setGoogleStatus(s);
-        if (s.email?.address && !gmailAddress) setGmailAddress(s.email.address);
+        setEmailStatus(s);
+        if (s.address && !gmailAddress) setGmailAddress(s.address);
       })
       .catch(() => {});
 
-  // On mount: check if a sync is already running (e.g. navigated away and came back)
+  const loadDealerContact = () =>
+    getDealerContact()
+      .then(c => {
+        if (c.address) setDealerAddress(c.address);
+        if (c.phone) setSalesPhone(c.phone);
+      })
+      .catch(() => {});
+
+  // On mount
   useEffect(() => {
     loadStatus();
-    loadDealerConfig();
-    loadGoogleStatus();
-
-    // Check for Google OAuth redirect result
-    const params = new URLSearchParams(window.location.search);
-    const googleResult = params.get('google');
-    if (googleResult === 'connected') {
-      setGoogleMsg({ type: 'success', text: 'Google Calendar connected successfully' });
-      window.history.replaceState({}, '', '/settings');
-    } else if (googleResult === 'error') {
-      setGoogleMsg({ type: 'error', text: 'Google Calendar authorization failed — please try again' });
-      window.history.replaceState({}, '', '/settings');
-    }
-
-    // Check if sync is in-flight
-    const saved = localStorage.getItem(SYNC_STATE_KEY);
-    if (saved) {
-      try {
-        const { syncStartTime } = JSON.parse(saved);
-        if (Date.now() - syncStartTime < 300_000) {
-          setFeedSyncing(true);
-          setFeedMsg({ type: 'info', text: 'Syncing inventory — reconnecting...' });
-          pollSyncProgress();
-          return;
-        }
-      } catch { /* ignore */ }
-      localStorage.removeItem(SYNC_STATE_KEY);
-    }
+    loadFeeds();
+    loadEmailStatus();
+    loadDealerContact();
   }, []);
 
   const handleDisconnect = async () => {
@@ -170,8 +108,11 @@ export default function Settings() {
     setFeedSaving(true);
     setFeedMsg(null);
     try {
-      await saveDealerConfig({ url: feedUrl.trim(), name: dealerName.trim(), enabled: true, autoGenerate });
-      await loadDealerConfig();
+      await createFeed({
+        feedUrl: feedUrl.trim(),
+        name: dealerName.trim() || null,
+      });
+      await loadFeeds();
       setFeedMsg({ type: 'success', text: 'Feed saved successfully' });
     } catch (e) {
       setFeedMsg({ type: 'error', text: 'Failed to save: ' + e.message });
@@ -180,94 +121,76 @@ export default function Settings() {
     }
   };
 
-  const finishSync = (msg) => {
-    localStorage.removeItem(SYNC_STATE_KEY);
-    setFeedMsg(msg);
-    setFeedSyncing(false);
-  };
-
   const handleSync = async () => {
+    if (!activeFeed) return;
     setFeedSyncing(true);
-    setFeedMsg({ type: 'info', text: 'Starting sync...' });
+    setFeedMsg({ type: 'info', text: 'Syncing inventory...' });
     try {
-      localStorage.setItem(SYNC_STATE_KEY, JSON.stringify({ syncStartTime: Date.now() }));
-      await triggerSync();
-      await pollSyncProgress();
-    } catch (e) {
-      finishSync({ type: 'error', text: 'Sync failed: ' + e.message });
-    }
-  };
+      let result;
 
-  const handleCredentialsUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setGoogleMsg(null);
-    try {
-      const text = await file.text();
-      const json = JSON.parse(text);
-      await uploadGoogleCredentials(json);
-      await loadGoogleStatus();
-      setGoogleMsg({ type: 'success', text: 'Credentials uploaded successfully' });
-    } catch (err) {
-      setGoogleMsg({ type: 'error', text: 'Invalid credentials file: ' + err.message });
-    }
-    e.target.value = '';
-  };
+      // For CarGurus feeds, use Electron's hidden browser to fetch HTML first
+      const isCargurus = activeFeed.feedType === 'CARGURUS' ||
+        (activeFeed.feedUrl && activeFeed.feedUrl.includes('cargurus.com'));
 
-  const handleConnectCalendar = async () => {
-    setCalConnecting(true);
-    setGoogleMsg(null);
-    try {
-      const { url } = await getGoogleAuthUrl();
-      if (!isSafeGoogleAuthUrl(url)) {
-        throw new Error('Received an invalid Google authorization URL');
+      if (isCargurus && window.autolander?.fetchFeedHtml) {
+        setFeedMsg({ type: 'info', text: 'Loading dealer page in browser...' });
+
+        const fetchResult = await window.autolander.fetchFeedHtml(activeFeed.feedUrl);
+
+        if (!fetchResult.success || !fetchResult.html) {
+          throw new Error(fetchResult.error || 'Failed to load dealer page');
+        }
+
+        setFeedMsg({ type: 'info', text: 'Parsing inventory data...' });
+
+        // Send the HTML to the cloud API for parsing and sync
+        result = await syncFeedHtml(activeFeed.id, fetchResult.html);
+      } else {
+        // For non-CarGurus feeds, use the normal server-side sync
+        result = await syncFeed(activeFeed.id);
       }
-      window.location.assign(url);
-    } catch (err) {
-      setGoogleMsg({ type: 'error', text: 'Failed to get auth URL: ' + err.message });
-      setCalConnecting(false);
-    }
-  };
 
-  const handleDisconnectGoogle = async () => {
-    if (!confirm('Disconnect Google Calendar? Appointments will no longer sync.')) return;
-    setGoogleMsg(null);
-    try {
-      await disconnectGoogle();
-      await loadGoogleStatus();
-      setGoogleMsg({ type: 'success', text: 'Google Calendar disconnected' });
-    } catch (err) {
-      setGoogleMsg({ type: 'error', text: 'Failed to disconnect: ' + err.message });
+      await loadFeeds();
+      const msg = `Sync complete: ${result.vehiclesFound} found, ${result.vehiclesAdded} added, ${result.vehiclesUpdated} updated`;
+      setFeedMsg({ type: 'success', text: msg });
+    } catch (e) {
+      setFeedMsg({ type: 'error', text: 'Sync failed: ' + e.message });
+    } finally {
+      setFeedSyncing(false);
     }
   };
 
   const handleSaveGmail = async () => {
     if (!gmailAddress.trim() || !gmailAppPassword.trim()) {
-      setGoogleMsg({ type: 'error', text: 'Enter both Gmail address and App Password' });
+      setEmailMsg({ type: 'error', text: 'Enter both Gmail address and App Password' });
       return;
     }
     setGmailSaving(true);
-    setGoogleMsg(null);
+    setEmailMsg(null);
     try {
       await saveGmailConfig({ address: gmailAddress.trim(), appPassword: gmailAppPassword.trim() });
-      await loadGoogleStatus();
+      await loadEmailStatus();
       setGmailAppPassword('');
-      setGoogleMsg({ type: 'success', text: 'Gmail configuration saved' });
+      setEmailMsg({ type: 'success', text: 'Gmail configuration saved' });
     } catch (err) {
-      setGoogleMsg({ type: 'error', text: 'Failed to save: ' + err.message });
+      setEmailMsg({ type: 'error', text: 'Failed to save: ' + err.message });
     } finally {
       setGmailSaving(false);
     }
   };
 
-  // Calendar status: green=connected, amber=credentials uploaded, red=none
-  const calStatus = googleStatus?.calendar?.connected
-    ? { color: 'emerald', label: 'Your Calendar Is Synced' }
-    : googleStatus?.calendar?.credentialsUploaded
-    ? { color: 'amber', label: 'Almost Ready — Sign In to Finish' }
-    : { color: 'rose', label: 'Not Connected' };
-
-  const primaryDealer = (dealerConfig?.dealers || []).find(d => d.id === 'primary');
+  const handleSaveContact = async () => {
+    setContactSaving(true);
+    setContactMsg(null);
+    try {
+      await saveDealerContact({ address: dealerAddress.trim(), phone: salesPhone.trim() });
+      setContactMsg({ type: 'success', text: 'Dealer contact info saved' });
+    } catch (err) {
+      setContactMsg({ type: 'error', text: 'Failed to save: ' + err.message });
+    } finally {
+      setContactSaving(false);
+    }
+  };
 
   return (
     <div className="space-y-10 pb-12 max-w-4xl">
@@ -318,7 +241,7 @@ export default function Settings() {
                      </div>
                      <div className="flex items-center justify-between p-3 rounded-xl bg-surface-900/30 border border-surface-800/50">
                         <span className="text-[10px] font-bold text-surface-500 uppercase tracking-widest flex items-center gap-2">
-                           <Calendar size={12} />
+                           <Clock size={12} />
                            Last Linked
                         </span>
                         <span className="text-xs font-black text-surface-200 uppercase">{fbStatus.savedAt}</span>
@@ -459,7 +382,7 @@ export default function Settings() {
           </div>
 
           {/* Status section */}
-          {primaryDealer && primaryDealer.lastScrape && (
+          {activeFeed && (
             <div className="space-y-3 p-4 rounded-2xl bg-surface-950/30 border border-surface-900/50">
               <h4 className="text-[10px] font-black uppercase tracking-widest text-surface-400 flex items-center gap-2">
                 <Activity size={12} />
@@ -472,22 +395,27 @@ export default function Settings() {
                     Date
                   </span>
                   <span className="text-[11px] font-black text-surface-200 uppercase">
-                    {new Date(primaryDealer.lastScrape).toLocaleDateString()}
+                    {activeFeed.lastSyncAt ? new Date(activeFeed.lastSyncAt).toLocaleDateString() : 'Never'}
                   </span>
                 </div>
                 <div className="flex items-center justify-between p-3 rounded-xl bg-surface-900/30 border border-surface-800/50">
                   <span className="text-[10px] font-bold text-surface-500 uppercase tracking-widest">Status</span>
-                  <Badge variant={primaryDealer.lastScrapeStatus?.startsWith('success') ? 'brand' : 'danger'} size="xs">
-                    {primaryDealer.lastScrapeStatus?.startsWith('success') ? 'OK' : 'ERROR'}
+                  <Badge variant={activeFeed.lastSyncStatus === 'success' ? 'brand' : activeFeed.lastSyncStatus ? 'danger' : 'warning'} size="xs">
+                    {(activeFeed.lastSyncStatus || 'PENDING').toUpperCase()}
                   </Badge>
                 </div>
                 <div className="flex items-center justify-between p-3 rounded-xl bg-surface-900/30 border border-surface-800/50">
                   <span className="text-[10px] font-bold text-surface-500 uppercase tracking-widest">Vehicles</span>
                   <span className="text-[11px] font-black text-brand-400 uppercase">
-                    {primaryDealer.lastScrapeStats?.validCount ?? '—'}
+                    {activeFeed.vehicleCount ?? 0}
                   </span>
                 </div>
               </div>
+              {activeFeed.syncLogs?.[0] && (
+                <p className="text-[10px] text-surface-500 font-medium italic px-1">
+                  Latest: {activeFeed.syncLogs[0].message}
+                </p>
+              )}
             </div>
           )}
 
@@ -517,7 +445,7 @@ export default function Settings() {
             </button>
             <button
               onClick={handleSync}
-              disabled={feedSyncing || !primaryDealer}
+              disabled={feedSyncing || !activeFeed}
               className="flex-1 py-3 bg-surface-900 hover:bg-surface-800 text-surface-300 text-xs font-black uppercase tracking-widest rounded-xl border border-surface-800 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
             >
               <Zap size={14} />
@@ -527,178 +455,146 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* Google Services — full width */}
+      {/* Dealership Contact — full width */}
       <div className="glass-card overflow-hidden">
         <div className="p-6 border-b border-surface-900/50 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-500 shadow-glow-green">
-            <Calendar size={20} />
+          <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-500 shadow-glow">
+            <MapPin size={20} />
           </div>
           <div>
-            <h2 className="text-sm font-black uppercase tracking-widest text-white leading-none">Appointments & Email</h2>
-            <p className="text-[10px] text-surface-500 uppercase font-bold tracking-widest mt-1">Google Calendar & Gmail Integration</p>
+            <h2 className="text-sm font-black uppercase tracking-widest text-white leading-none">Dealership Contact</h2>
+            <p className="text-[10px] text-surface-500 uppercase font-bold tracking-widest mt-1">Address & Sales Representative</p>
           </div>
         </div>
 
-        <div className="p-6 space-y-8">
-          {/* Messages */}
-          {googleMsg && (
+        <div className="p-6 space-y-6">
+          {contactMsg && (
             <div className={`flex items-center gap-2 p-3 rounded-xl text-xs font-bold uppercase tracking-widest ${
-              googleMsg.type === 'success'
+              contactMsg.type === 'success'
                 ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
                 : 'bg-rose-500/10 border border-rose-500/20 text-rose-400'
             }`}>
-              {googleMsg.type === 'success' ? <CheckCircle size={14} /> : <AlertCircle size={14} />}
-              {googleMsg.text}
+              {contactMsg.type === 'success' ? <CheckCircle size={14} /> : <AlertCircle size={14} />}
+              {contactMsg.text}
             </div>
           )}
 
-          {googleStatus ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-              {/* Google Calendar */}
-              <div className="space-y-4">
-                <h3 className="text-[10px] font-black uppercase tracking-widest text-surface-400 flex items-center gap-2">
-                  <Calendar size={12} />
-                  Appointment Calendar
-                </h3>
-                <p className="text-[11px] text-surface-500 leading-relaxed -mt-2">
-                  Connect your Google Calendar so the bot can check your real availability and book test drives directly onto your schedule.
-                </p>
+          <p className="text-[11px] text-surface-500 leading-relaxed">
+            This information is included in appointment confirmation emails and calendar invites sent to buyers.
+          </p>
 
-                <div className="flex items-center gap-3 p-4 rounded-2xl bg-surface-950/50 border border-surface-900/50">
-                  <div className={`w-2 h-2 rounded-full animate-pulse ${
-                    googleStatus.calendar.connected
-                      ? 'bg-emerald-500 shadow-glow-green'
-                      : googleStatus.calendar.credentialsUploaded
-                      ? 'bg-amber-500 shadow-glow-amber'
-                      : 'bg-rose-500 shadow-glow-red'
-                  }`} />
-                  <p className={`text-xs font-black uppercase tracking-widest ${
-                    googleStatus.calendar.connected
-                      ? 'text-emerald-400'
-                      : googleStatus.calendar.credentialsUploaded
-                      ? 'text-amber-400'
-                      : 'text-rose-400'
-                  }`}>
-                    {calStatus.label}
-                  </p>
-                </div>
-
-                {!googleStatus.calendar.credentialsUploaded && (
-                  <div className="space-y-3">
-                    <div className="p-4 rounded-2xl bg-surface-950/30 border border-surface-900/50 space-y-2">
-                      <h4 className="text-[10px] font-black uppercase tracking-widest text-surface-300 flex items-center gap-2">
-                        <Info size={11} />
-                        One-Time Setup
-                      </h4>
-                      <p className="text-[11px] text-surface-500 leading-relaxed">
-                        Your admin needs to create a Google Cloud project and download the credentials file. Once you have it, upload it here and then sign in with your Google account.
-                      </p>
-                    </div>
-                    <label className="w-full py-3 bg-brand-500 hover:bg-brand-600 text-white text-xs font-black uppercase tracking-widest rounded-xl transition-all shadow-glow-blue flex items-center justify-center gap-2 cursor-pointer">
-                      <Upload size={14} />
-                      Upload Setup File
-                      <input type="file" accept=".json" onChange={handleCredentialsUpload} className="hidden" />
-                    </label>
-                  </div>
-                )}
-
-                {googleStatus.calendar.credentialsUploaded && !googleStatus.calendar.connected && (
-                  <div className="space-y-3">
-                    <p className="text-[11px] text-surface-500 leading-relaxed">
-                      Setup file uploaded. Now sign in with Google to give the bot access to your calendar.
-                    </p>
-                    <button
-                      onClick={handleConnectCalendar}
-                      disabled={calConnecting}
-                      className="w-full py-3 bg-brand-500 hover:bg-brand-600 text-white text-xs font-black uppercase tracking-widest rounded-xl transition-all shadow-glow-blue flex items-center justify-center gap-2 disabled:opacity-50"
-                    >
-                      <Calendar size={14} />
-                      {calConnecting ? 'Redirecting to Google...' : 'Sign In with Google'}
-                    </button>
-                  </div>
-                )}
-
-                {googleStatus.calendar.connected && (
-                  <div className="space-y-3">
-                    <p className="text-[11px] text-surface-500 leading-relaxed">
-                      The bot will check your calendar before offering appointment times and add confirmed test drives automatically.
-                    </p>
-                    <button
-                      onClick={handleDisconnectGoogle}
-                      className="w-full py-3 bg-surface-900 hover:bg-surface-800 text-surface-400 text-xs font-black uppercase tracking-widest rounded-xl border border-surface-800 transition-all flex items-center justify-center gap-2"
-                    >
-                      <Unplug size={14} />
-                      Disconnect Calendar
-                    </button>
-                  </div>
-                )}
-
-                {googleStatus.calendar.credentialsUploaded && (
-                  <label className="w-full py-2 bg-surface-900/50 hover:bg-surface-800 text-surface-500 text-[10px] font-bold uppercase tracking-widest rounded-xl border border-surface-800/50 transition-all flex items-center justify-center gap-2 cursor-pointer">
-                    <Upload size={11} />
-                    Replace Setup File
-                    <input type="file" accept=".json" onChange={handleCredentialsUpload} className="hidden" />
-                  </label>
-                )}
-              </div>
-
-              {/* Gmail Email */}
-              <div className="space-y-4">
-                <h3 className="text-[10px] font-black uppercase tracking-widest text-surface-400 flex items-center gap-2">
-                  <Mail size={12} />
-                  Email Notifications
-                </h3>
-                <p className="text-[11px] text-surface-500 leading-relaxed -mt-2">
-                  Get emailed when a hot lead needs your attention, and send buyers automatic appointment confirmations.
-                </p>
-
-                <div className="flex items-center gap-3 p-4 rounded-2xl bg-surface-950/50 border border-surface-900/50">
-                  <div className={`w-2 h-2 rounded-full ${googleStatus.email.configured ? 'bg-emerald-500 shadow-glow-green' : 'bg-rose-500 shadow-glow-red'} animate-pulse`} />
-                  <p className={`text-xs font-black uppercase tracking-widest ${googleStatus.email.configured ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {googleStatus.email.configured ? 'Active' : 'Not Connected'}
-                  </p>
-                </div>
-
-                <div className="space-y-3">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-surface-500 uppercase tracking-widest">Your Gmail Address</label>
-                    <input
-                      type="email"
-                      value={gmailAddress}
-                      onChange={e => setGmailAddress(e.target.value)}
-                      placeholder="you@gmail.com"
-                      className="w-full px-4 py-3 rounded-xl bg-surface-950/50 border border-surface-800/50 text-surface-200 text-sm placeholder-surface-700 focus:border-brand-500/50 focus:outline-none transition-colors"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-surface-500 uppercase tracking-widest">App Password</label>
-                    <input
-                      type="password"
-                      value={gmailAppPassword}
-                      onChange={e => setGmailAppPassword(e.target.value)}
-                      placeholder="xxxx xxxx xxxx xxxx"
-                      className="w-full px-4 py-3 rounded-xl bg-surface-950/50 border border-surface-800/50 text-surface-200 text-sm placeholder-surface-700 focus:border-brand-500/50 focus:outline-none transition-colors"
-                    />
-                    <p className="text-[10px] text-surface-600 leading-relaxed mt-1">
-                      This is NOT your Gmail password. Go to <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:text-brand-300 underline">Google App Passwords</a>, create one for "Mail", and paste the 16-character code here.
-                    </p>
-                  </div>
-                  <button
-                    onClick={handleSaveGmail}
-                    disabled={gmailSaving}
-                    className="w-full py-3 bg-brand-500 hover:bg-brand-600 text-white text-xs font-black uppercase tracking-widest rounded-xl transition-all shadow-glow-blue flex items-center justify-center gap-2 disabled:opacity-50"
-                  >
-                    <Save size={14} />
-                    {gmailSaving ? 'Saving...' : 'Save'}
-                  </button>
-                </div>
-              </div>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold text-surface-500 uppercase tracking-widest flex items-center gap-2">
+                <MapPin size={12} className="text-amber-500/50" />
+                Dealership Address
+              </label>
+              <input
+                type="text"
+                value={dealerAddress}
+                onChange={e => setDealerAddress(e.target.value)}
+                placeholder="123 Main St, City, State ZIP"
+                className="w-full px-4 py-3 rounded-xl bg-surface-950/50 border border-surface-800/50 text-surface-200 text-sm placeholder-surface-700 focus:border-brand-500/50 focus:outline-none transition-colors"
+              />
             </div>
-          ) : (
-            <div className="flex items-center justify-center py-10 opacity-30">
-              <RefreshCw size={24} className="animate-spin" />
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold text-surface-500 uppercase tracking-widest flex items-center gap-2">
+                <Phone size={12} className="text-amber-500/50" />
+                Sales Rep Phone
+              </label>
+              <input
+                type="tel"
+                value={salesPhone}
+                onChange={e => setSalesPhone(e.target.value)}
+                placeholder="(555) 555-5555"
+                className="w-full px-4 py-3 rounded-xl bg-surface-950/50 border border-surface-800/50 text-surface-200 text-sm placeholder-surface-700 focus:border-brand-500/50 focus:outline-none transition-colors"
+              />
+            </div>
+
+            <button
+              onClick={handleSaveContact}
+              disabled={contactSaving}
+              className="w-full py-3 bg-brand-500 hover:bg-brand-600 text-white text-xs font-black uppercase tracking-widest rounded-xl transition-all shadow-glow-blue flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              <Save size={14} />
+              {contactSaving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Email Configuration — full width */}
+      <div className="glass-card overflow-hidden">
+        <div className="p-6 border-b border-surface-900/50 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-500 shadow-glow-green">
+            <Mail size={20} />
+          </div>
+          <div>
+            <h2 className="text-sm font-black uppercase tracking-widest text-white leading-none">Email & Calendar Invites</h2>
+            <p className="text-[10px] text-surface-500 uppercase font-bold tracking-widest mt-1">Automatic Confirmation Emails</p>
+          </div>
+        </div>
+
+        <div className="p-6 space-y-6">
+          {emailMsg && (
+            <div className={`flex items-center gap-2 p-3 rounded-xl text-xs font-bold uppercase tracking-widest ${
+              emailMsg.type === 'success'
+                ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
+                : 'bg-rose-500/10 border border-rose-500/20 text-rose-400'
+            }`}>
+              {emailMsg.type === 'success' ? <CheckCircle size={14} /> : <AlertCircle size={14} />}
+              {emailMsg.text}
             </div>
           )}
+
+          <p className="text-[11px] text-surface-500 leading-relaxed">
+            When a buyer books an appointment and provides their email, the system automatically sends a confirmation email with a calendar invite attached. Configure your Gmail below to enable this.
+          </p>
+
+          <div className="flex items-center gap-3 p-4 rounded-2xl bg-surface-950/50 border border-surface-900/50">
+            <div className={`w-2 h-2 rounded-full ${emailStatus?.configured ? 'bg-emerald-500 shadow-glow-green' : 'bg-rose-500 shadow-glow-red'} animate-pulse`} />
+            <p className={`text-xs font-black uppercase tracking-widest ${emailStatus?.configured ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {emailStatus?.configured ? 'Active' : 'Not Connected'}
+            </p>
+            {emailStatus?.address && (
+              <span className="text-[10px] text-surface-500 ml-auto">{emailStatus.address}</span>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-surface-500 uppercase tracking-widest">Your Gmail Address</label>
+              <input
+                type="email"
+                value={gmailAddress}
+                onChange={e => setGmailAddress(e.target.value)}
+                placeholder="you@gmail.com"
+                className="w-full px-4 py-3 rounded-xl bg-surface-950/50 border border-surface-800/50 text-surface-200 text-sm placeholder-surface-700 focus:border-brand-500/50 focus:outline-none transition-colors"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-surface-500 uppercase tracking-widest">App Password</label>
+              <input
+                type="password"
+                value={gmailAppPassword}
+                onChange={e => setGmailAppPassword(e.target.value)}
+                placeholder="xxxx xxxx xxxx xxxx"
+                className="w-full px-4 py-3 rounded-xl bg-surface-950/50 border border-surface-800/50 text-surface-200 text-sm placeholder-surface-700 focus:border-brand-500/50 focus:outline-none transition-colors"
+              />
+              <p className="text-[10px] text-surface-600 leading-relaxed mt-1">
+                This is NOT your Gmail password. Go to <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:text-brand-300 underline">Google App Passwords</a>, create one for "Mail", and paste the 16-character code here.
+              </p>
+            </div>
+            <button
+              onClick={handleSaveGmail}
+              disabled={gmailSaving}
+              className="w-full py-3 bg-brand-500 hover:bg-brand-600 text-white text-xs font-black uppercase tracking-widest rounded-xl transition-all shadow-glow-blue flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              <Save size={14} />
+              {gmailSaving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

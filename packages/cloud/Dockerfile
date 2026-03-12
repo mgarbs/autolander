@@ -28,4 +28,4 @@ ENV NODE_ENV=production
 ENV PORT=3000
 
 ENTRYPOINT ["tini", "--"]
-CMD ["node", "src/index.js"]
+CMD ["sh", "-c", "npx prisma migrate deploy --schema=prisma/schema.prisma && node src/index.js"]

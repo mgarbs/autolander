@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getInventory, startAssistedPost, cancelPostSession } from '../api/client';
+import { getPostQueue, markVehiclePosted } from '../api/client';
+import FilterDropdown from '../components/FilterDropdown';
 import {
   Send,
   ArrowLeft,
@@ -37,7 +38,7 @@ export default function AssistedPost() {
   const [resultData, setResultData] = useState(null);
 
   useEffect(() => {
-    getInventory()
+    getPostQueue()
       .then(data => setVehicles(data.vehicles || []))
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -47,7 +48,7 @@ export default function AssistedPost() {
     if (startingVin) return;
     setStartingVin(vehicle.vin);
     try {
-      await startAssistedPost(vehicle.vin);
+      await window.autolander.fb.startAssistedPost({ vehicle });
       setSelectedVin(vehicle.vin);
       setPhase('streaming');
     } catch (e) {
@@ -56,7 +57,22 @@ export default function AssistedPost() {
     }
   };
 
-  const handleResult = (data) => {
+  const handleResult = async (data) => {
+    // Mark the vehicle as posted in the database
+    if (data && !data.error) {
+      const vehicle = vehicles.find(v => v.vin === selectedVin);
+      try {
+        await markVehiclePosted({
+          vehicleId: vehicle?.id,
+          vin: selectedVin,
+          postUrl: data.postUrl,
+          postId: data.postId,
+          postedAt: data.postedAt,
+        });
+      } catch (e) {
+        console.error('Failed to mark vehicle as posted:', e.message);
+      }
+    }
     setResultData(data);
     setPhase('result');
   };
@@ -66,6 +82,12 @@ export default function AssistedPost() {
     setSelectedVin(null);
     setStartingVin(null);
     setResultData(null);
+    // Re-fetch the queue so just-posted vehicles are removed
+    setLoading(true);
+    getPostQueue()
+      .then(data => setVehicles(data.vehicles || []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
   };
 
   if (phase === 'streaming') {
@@ -80,7 +102,7 @@ export default function AssistedPost() {
 }
 
 // ---------------------------------------------------------------------------
-// Vehicle Selector
+// Vehicle Selector (unchanged)
 // ---------------------------------------------------------------------------
 const PER_PAGE = 12;
 
@@ -283,37 +305,37 @@ function VehicleSelector({ vehicles, loading, onSelect, startingVin = null }) {
                 </div>
 
                 {/* Make filter */}
-                <select
-                  value={filterMake}
-                  onChange={e => handleMake(e.target.value)}
-                  className="px-4 py-2.5 bg-surface-950/50 border border-surface-800/50 rounded-xl text-sm text-white outline-none focus:border-brand-500/50 transition-colors appearance-none cursor-pointer"
-                >
-                  <option value="All">All Makes</option>
-                  {makes.map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
+                <div className="min-w-[160px]">
+                  <FilterDropdown
+                    value={filterMake}
+                    onChange={handleMake}
+                    options={[{ value: 'All', label: 'All Makes' }, ...makes.map(m => ({ value: m, label: m }))]}
+                  />
+                </div>
 
                 {/* Body type filter */}
-                <select
-                  value={filterBody}
-                  onChange={e => handleBody(e.target.value)}
-                  className="px-4 py-2.5 bg-surface-950/50 border border-surface-800/50 rounded-xl text-sm text-white outline-none focus:border-brand-500/50 transition-colors appearance-none cursor-pointer"
-                >
-                  <option value="All">All Body Types</option>
-                  {bodyStyles.map(b => <option key={b} value={b}>{b}</option>)}
-                </select>
+                <div className="min-w-[160px]">
+                  <FilterDropdown
+                    value={filterBody}
+                    onChange={handleBody}
+                    options={[{ value: 'All', label: 'All Body Types' }, ...bodyStyles.map(b => ({ value: b, label: b }))]}
+                  />
+                </div>
 
                 {/* Sort */}
-                <select
-                  value={sortBy}
-                  onChange={e => handleSort(e.target.value)}
-                  className="px-4 py-2.5 bg-surface-950/50 border border-surface-800/50 rounded-xl text-sm text-white outline-none focus:border-brand-500/50 transition-colors appearance-none cursor-pointer"
-                >
-                  <option value="price-asc">Price: Low → High</option>
-                  <option value="price-desc">Price: High → Low</option>
-                  <option value="year-desc">Year: Newest</option>
-                  <option value="year-asc">Year: Oldest</option>
-                  <option value="newest">Recently Added</option>
-                </select>
+                <div className="min-w-[160px]">
+                  <FilterDropdown
+                    value={sortBy}
+                    onChange={handleSort}
+                    options={[
+                      { value: 'price-asc', label: 'Price: Low → High' },
+                      { value: 'price-desc', label: 'Price: High → Low' },
+                      { value: 'year-desc', label: 'Year: Newest' },
+                      { value: 'year-asc', label: 'Year: Oldest' },
+                      { value: 'newest', label: 'Recently Added' },
+                    ]}
+                  />
+                </div>
               </div>
 
               {/* Results count */}
@@ -394,20 +416,19 @@ function VehicleSelector({ vehicles, loading, onSelect, startingVin = null }) {
 }
 
 // ---------------------------------------------------------------------------
-// Streaming View (canvas + WebSocket)
+// Streaming View (canvas + IPC)
 // ---------------------------------------------------------------------------
 function StreamingView({ onResult, onCancel }) {
   const canvasRef = useRef(null);
-  const wsRef = useRef(null);
   const frameQueueRef = useRef([]);
   const rafRef = useRef(null);
   const lastMouseMoveRef = useRef(0);
 
-  const [status, setStatus] = useState('connecting');
+  const [status, setStatus] = useState('initializing');
   const [message, setMessage] = useState('');
   const [dismissedOverlay, setDismissedOverlay] = useState(false);
 
-  const statusRef = useRef('connecting');
+  const statusRef = useRef('initializing');
   const setStatusBoth = (s) => { statusRef.current = s; setStatus(s); };
 
   useEffect(() => {
@@ -417,57 +438,39 @@ function StreamingView({ onResult, onCancel }) {
     // RAF draw loop
     const drawLoop = () => {
       if (frameQueueRef.current.length > 0) {
-        const base64 = frameQueueRef.current[frameQueueRef.current.length - 1];
+        const frame = frameQueueRef.current[frameQueueRef.current.length - 1];
         frameQueueRef.current = [];
         const img = new Image();
         img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        img.src = `data:image/jpeg;base64,${base64}`;
+        img.src = `data:image/jpeg;base64,${frame.data}`;
       }
       rafRef.current = requestAnimationFrame(drawLoop);
     };
     rafRef.current = requestAnimationFrame(drawLoop);
 
-    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const accessToken = localStorage.getItem('accessToken');
-    const tokenParam = accessToken ? `?token=${encodeURIComponent(accessToken)}` : '';
-    const ws = new WebSocket(`${wsProtocol}//${location.host}/assisted-post/stream${tokenParam}`);
-    wsRef.current = ws;
+    // Frame Listener
+    const unsubFrame = window.autolander.fb.onFrame((frame) => {
+      frameQueueRef.current.push(frame);
+    });
 
-    ws.onopen = () => setStatusBoth('initializing');
+    // Progress Listener
+    const unsubProgress = window.autolander.fb.onProgress((data) => {
+      const { stage, message, detail, percent } = data;
+      setStatusBoth(stage);
+      setMessage(message || '');
 
-    ws.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data);
-        if (msg.type === 'frame') {
-          frameQueueRef.current.push(msg.data);
-        } else if (msg.type === 'status') {
-          setStatusBoth(msg.state);
-          setMessage(msg.message || '');
-          if (msg.state === 'success') {
-            setTimeout(() => onResult(msg.detail || {}), 2500);
-          }
-          if (msg.state === 'error' || msg.state === 'timeout') {
-            setTimeout(() => onResult({ error: true, message: msg.message }), 2500);
-          }
-        }
-      } catch (_) {}
-    };
-
-    ws.onerror = () => {
-      setStatusBoth('error');
-      setMessage('Could not connect to posting stream.');
-    };
-
-    ws.onclose = () => {
-      if (!['success', 'error', 'timeout'].includes(statusRef.current)) {
-        setStatusBoth('error');
-        setMessage('Connection closed unexpectedly.');
+      if (stage === 'success') {
+        setTimeout(() => onResult(detail || {}), 2500);
       }
-    };
+      if (stage === 'error' || stage === 'timeout') {
+        setTimeout(() => onResult({ error: true, message: message }), 2500);
+      }
+    });
 
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      ws.close();
+      unsubFrame();
+      unsubProgress();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -479,10 +482,11 @@ function StreamingView({ onResult, onCancel }) {
     };
   };
 
-  const send = (event) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(event));
-    }
+  const send = (inputData) => {
+    // Flatten { type:'mouse', event:'click', x, y } → { type:'click', x, y }
+    // and route to the assisted post session (not auth).
+    const { event, type: _cat, ...rest } = inputData;
+    window.autolander.fb.sendInput({ input: { type: event, ...rest }, target: 'assisted' });
   };
 
   const isInteractive = INTERACTIVE_STATES.includes(status);
@@ -493,37 +497,39 @@ function StreamingView({ onResult, onCancel }) {
     if (now - lastMouseMoveRef.current < MOUSEMOVE_THROTTLE_MS) return;
     lastMouseMoveRef.current = now;
     const { x, y } = getViewportCoords(e);
-    send({ type: 'mousemove', x, y });
+    send({ type: 'mouse', event: 'mousemove', x, y });
   };
 
   const handleMouseDown = (e) => {
     if (!isInteractive) return;
     canvasRef.current.focus();
     e.preventDefault();
+    const { x, y } = getViewportCoords(e);
+    send({ type: 'mouse', event: 'mousedown', x, y, button: e.button === 2 ? 'right' : 'left' });
   };
 
   const handleMouseUp = (e) => {
     if (!isInteractive) return;
     const { x, y } = getViewportCoords(e);
-    // Send atomic click — more reliable than split mousedown/mouseup for
-    // Facebook's React event system, and avoids async race conditions.
-    send({ type: 'click', x, y, button: e.button === 2 ? 'right' : 'left' });
+    // Note: Some systems prefer 'click' instead of down/up, 
+    // but the adapter usually handles the full lifecycle.
+    send({ type: 'mouse', event: 'mouseup', x, y, button: e.button === 2 ? 'right' : 'left' });
   };
 
   const handleKeyDown = (e) => {
     if (!isInteractive) return;
     e.preventDefault();
-    send({ type: 'keydown', key: e.key });
+    send({ type: 'keyboard', event: 'keydown', key: e.key, code: e.code });
   };
 
   const handleWheel = (e) => {
     if (!isInteractive) return;
     e.preventDefault();
-    send({ type: 'wheel', deltaX: e.deltaX, deltaY: e.deltaY });
+    send({ type: 'mouse', event: 'wheel', deltaX: e.deltaX, deltaY: e.deltaY });
   };
 
   const handleCancel = async () => {
-    try { await cancelPostSession(); } catch (_) {}
+    try { await window.autolander.fb.cancelAssistedPost(); } catch (_) {}
     onCancel();
   };
 
@@ -612,16 +618,6 @@ function StreamingView({ onResult, onCancel }) {
             </div>
           )}
 
-          {/* AI working overlay */}
-          {WORKING_STATES.includes(status) && (
-            <div className="absolute top-4 left-4 z-20 px-4 py-2 bg-surface-950/80 backdrop-blur-md rounded-xl border border-brand-500/20 flex items-center gap-3">
-              <Loader2 size={14} className="animate-spin text-brand-400" />
-              <span className="text-[10px] font-black uppercase tracking-widest text-brand-400">
-                AI is working — please wait
-              </span>
-            </div>
-          )}
-
           <canvas
             ref={canvasRef}
             width={VIEWPORT_W}
@@ -658,7 +654,7 @@ function StreamingView({ onResult, onCancel }) {
 }
 
 // ---------------------------------------------------------------------------
-// Result View
+// Result View (unchanged)
 // ---------------------------------------------------------------------------
 function ResultView({ data, onBack }) {
   const isError = data?.error;
@@ -681,14 +677,13 @@ function ResultView({ data, onBack }) {
             </div>
             <h2 className="text-2xl font-black text-white uppercase">Listed Successfully</h2>
             {data.postUrl && (
-              <a
-                href={data.postUrl}
-                target="_blank"
-                rel="noopener noreferrer"
+              <button
+                type="button"
+                onClick={() => window.autolander.openExternal(data.postUrl)}
                 className="inline-block px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black uppercase tracking-widest rounded-xl transition-all"
               >
                 View Listing on Facebook
-              </a>
+              </button>
             )}
           </>
         )}

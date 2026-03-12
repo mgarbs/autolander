@@ -147,11 +147,14 @@ model Vehicle {
 
 model Conversation {
   id             String            @id @default(uuid())
+  threadId       String?
   orgId          String
   agentId        String?
   vehicleId      String?
   buyerName      String
   buyerId        String?
+  buyerEmail     String?
+  buyerPhone     String?
   state          ConversationState @default(NEW)
   leadScore      Int               @default(20)
   sentimentScore Float?
@@ -168,6 +171,7 @@ model Conversation {
   @@index([orgId])
   @@index([orgId, state])
   @@index([orgId, leadScore])
+  @@index([orgId, threadId])
 }
 
 model Message {
@@ -177,11 +181,14 @@ model Message {
   text           String
   intent         String?
   metadata       Json?
+  status         String           @default("SENT")
+  attempts       Int              @default(0)
   createdAt      DateTime         @default(now())
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([conversationId])
+  @@index([status])
 }
 
 model Appointment {

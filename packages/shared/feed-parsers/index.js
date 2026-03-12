@@ -41,4 +41,14 @@ async function parseFeed(feedUrl, feedType) {
   return parser.parse(feedUrl);
 }
 
-module.exports = { detectFeedType, getParser, parseFeed };
+function parseFeedHtml(html, feedUrl, feedType) {
+  const type = feedType || detectFeedType(feedUrl);
+  const parser = getParser(type);
+  if (typeof parser.parseHtml === 'function') {
+    return parser.parseHtml(html, feedUrl);
+  }
+  // Fallback: use generic HTML parsing
+  return generic.parseHtml ? generic.parseHtml(html, feedUrl) : [];
+}
+
+module.exports = { detectFeedType, getParser, parseFeed, parseFeedHtml };

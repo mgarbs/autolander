@@ -15,9 +15,10 @@ const createConversationsRouter = require('./routes/conversations');
 const createAppointmentsRouter = require('./routes/appointments');
 const createAgentsRouter = require('./routes/agents');
 const createDealerConfigRouter = require('./routes/dealer-config');
-const createGoogleRouter = require('./routes/google');
 const createFeedsRouter = require('./routes/feeds');
 const createAiRouter = require('./routes/ai');
+const createBillingRouter = require('./routes/billing');
+const feedSync = require('./services/feed-sync');
 
 // WebSocket gateways
 const { AgentGateway } = require('./ws/agent-gateway');
@@ -72,9 +73,9 @@ app.use('/api/conversations', requireAuth, orgScope, createConversationsRouter(p
 app.use('/api/appointments', requireAuth, orgScope, createAppointmentsRouter(prisma));
 app.use('/api/agents', requireAuth, orgScope, createAgentsRouter(prisma));
 app.use('/api/dealer-config', requireAuth, orgScope, createDealerConfigRouter(prisma));
-app.use('/api/google', requireAuth, orgScope, createGoogleRouter(prisma));
 app.use('/api/feeds', requireAuth, orgScope, createFeedsRouter(prisma));
 app.use('/api/ai', requireAuth, orgScope, createAiRouter(prisma));
+app.use('/api/billing', requireAuth, orgScope, createBillingRouter(prisma));
 
 // --- No SPA serving — React runs inside Electron ---
 
@@ -85,6 +86,9 @@ const server = http.createServer(app);
 const clientGateway = new ClientGateway();
 const agentGateway = new AgentGateway({ prisma, dashboardGateway: clientGateway });
 const commandDispatcher = new CommandDispatcher({ agentGateway, dashboardGateway: clientGateway, prisma });
+
+app.set('agentGateway', agentGateway);
+app.set('clientGateway', clientGateway);
 
 // Make dispatcher available to route handlers
 app.set('commandDispatcher', commandDispatcher);
@@ -102,12 +106,112 @@ server.on('upgrade', (req, socket, head) => {
   }
 });
 
+// --- Pending message sweep (every 30 seconds) ---
+const { Commands, createCommand } = require('@autolander/shared/protocol');
+
+setInterval(async () => {
+  try {
+    // Find PENDING outbound messages older than 30 seconds, max 3 attempts
+    const pendingMessages = await prisma.message.findMany({
+      where: {
+        direction: 'OUTBOUND',
+        status: 'PENDING',
+        attempts: { lt: 3 },
+        createdAt: { lt: new Date(Date.now() - 30000) },
+      },
+      include: {
+        conversation: { select: { id: true, threadId: true, orgId: true, buyerName: true } },
+      },
+      take: 10,
+      orderBy: { createdAt: 'asc' },
+    });
+
+    for (const msg of pendingMessages) {
+      const conv = msg.conversation;
+      if (!conv) continue;
+
+      const onlineAgents = agentGateway.getOnlineAgents(conv.orgId);
+      if (onlineAgents.length === 0) continue;
+
+      const command = createCommand(Commands.SEND_MESSAGE, {
+        threadId: conv.threadId || conv.id,
+        text: msg.text,
+        expectedBuyer: conv.buyerName,
+        messageId: msg.id,
+      });
+
+      const sent = agentGateway.sendToAgent(conv.orgId, onlineAgents[0].id, command);
+      if (sent) {
+        await prisma.message.update({
+          where: { id: msg.id },
+          data: { status: 'SENT', attempts: msg.attempts + 1 },
+        });
+        console.log(`[sweep] Sent pending msg ${msg.id} for conv ${conv.id} (attempt ${msg.attempts + 1})`);
+      } else {
+        await prisma.message.update({
+          where: { id: msg.id },
+          data: { attempts: msg.attempts + 1 },
+        });
+        console.log(`[sweep] Failed to dispatch msg ${msg.id}, attempt ${msg.attempts + 1}`);
+      }
+    }
+
+    // Mark messages with 3+ attempts as FAILED
+    await prisma.message.updateMany({
+      where: {
+        direction: 'OUTBOUND',
+        status: 'PENDING',
+        attempts: { gte: 3 },
+      },
+      data: { status: 'FAILED' },
+    });
+  } catch (err) {
+    console.error('[sweep] Error:', err.message);
+  }
+}, 30000);
+
 // --- Start server ---
 server.listen(PORT, () => {
   console.log(`[cloud] AutoLander Cloud API running on port ${PORT}`);
   console.log(`[cloud] Agent gateway at ws://localhost:${PORT}/ws/agent`);
   console.log(`[cloud] Client gateway at ws://localhost:${PORT}/ws/dashboard`);
   console.log(`[cloud] Health check at http://localhost:${PORT}/health`);
+
+  const runFeedSyncCycle = async () => {
+    console.log('[feed-scheduler] Starting feed sync cycle');
+    try {
+      const feeds = await prisma.inventoryFeed.findMany({
+        where: { enabled: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      console.log(`[feed-scheduler] Found ${feeds.length} enabled feeds`);
+
+      for (const feed of feeds) {
+        try {
+          const result = await feedSync.syncFeed(feed, prisma);
+          console.log(
+            `[feed-scheduler] Feed ${feed.id} synced: found=${result.vehiclesFound}, added=${result.vehiclesAdded}, updated=${result.vehiclesUpdated}, errors=${result.errors.length}`
+          );
+        } catch (feedError) {
+          console.error(`[feed-scheduler] Feed ${feed.id} failed: ${feedError.message}`);
+        }
+      }
+    } catch (error) {
+      console.error(`[feed-scheduler] Sync cycle failed: ${error.message}`);
+    }
+  };
+
+  setTimeout(() => {
+    runFeedSyncCycle().catch(error => {
+      console.error(`[feed-scheduler] Startup sync failed: ${error.message}`);
+    });
+  }, 30_000);
+
+  setInterval(() => {
+    runFeedSyncCycle().catch(error => {
+      console.error(`[feed-scheduler] Interval sync failed: ${error.message}`);
+    });
+  }, 21_600_000);
 });
 
 module.exports = { app, server, prisma };

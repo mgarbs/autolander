@@ -25,13 +25,15 @@ function createWindow() {
     mainWindow.show();
   });
 
-  // In dev mode, load from Vite dev server
-  if (process.env.VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+  // In dev mode, load from Vite dev server; in production, load built renderer
+  const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173';
+  const rendererPath = path.join(__dirname, '../renderer/dist/index.html');
+  const fs = require('fs');
+
+  if (process.env.VITE_DEV_SERVER_URL || !fs.existsSync(rendererPath)) {
+    mainWindow.loadURL(devUrl);
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
-    // In production, load built renderer from file
-    const rendererPath = path.join(__dirname, '../renderer/dist/index.html');
     mainWindow.loadFile(rendererPath);
   }
 

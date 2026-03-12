@@ -1,21 +1,59 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { getBaseUrl } from '../api/client';
+import { useRealtime } from '../context/RealtimeContext';
+import { Calendar, RefreshCw, Clock, User, Car } from 'lucide-react';
 
 export default function Appointments() {
+  const navigate = useNavigate();
+  const { lastEvents } = useRealtime();
   const [appointments, setAppointments] = useState([]);
   const [loading, setLoading] = useState(true);
+  const abortRef = useRef(null);
 
-  useEffect(() => {
+  const [convMap, setConvMap] = useState({});
+
+  const load = useCallback(async (showLoading = true, signal) => {
+    if (showLoading) setLoading(true);
     const base = getBaseUrl();
     const token = localStorage.getItem('accessToken');
-    fetch(`${base}/api/appointments`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(r => r.json())
-      .then(data => setAppointments(data.appointments || []))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    try {
+      const [apptRes, convRes] = await Promise.all([
+        fetch(`${base}/api/appointments`, { headers: { Authorization: `Bearer ${token}` }, signal }),
+        fetch(`${base}/api/conversations`, { headers: { Authorization: `Bearer ${token}` }, signal }),
+      ]);
+      const apptData = await apptRes.json();
+      const convData = await convRes.json();
+      setAppointments(apptData.appointments || []);
+      // Build buyerName -> conversationId lookup
+      const map = {};
+      (Array.isArray(convData) ? convData : []).forEach(c => {
+        if (c.buyerName) map[c.buyerName.toLowerCase()] = c.id;
+      });
+      setConvMap(map);
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      console.error('Failed to load appointments:', err);
+    } finally {
+      if (showLoading) setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    abortRef.current = ac;
+    load(true, ac.signal);
+    return () => ac.abort();
+  }, [load]);
+
+  useEffect(() => {
+    if (lastEvents.appointment) {
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+      load(false, ac.signal);
+    }
+  }, [lastEvents.appointment, load]);
 
   if (loading) {
     return (
@@ -35,8 +73,14 @@ export default function Appointments() {
         </div>
       ) : (
         <div className="space-y-3">
-          {appointments.map((appt) => (
-            <div key={appt.id} className="glass-card p-4 flex items-center justify-between">
+          {appointments.map((appt) => {
+            const convId = convMap[appt.buyerName?.toLowerCase()];
+            return (
+            <div
+              key={appt.id}
+              onClick={() => convId && navigate(`/leads/${convId}`)}
+              className={`glass-card p-4 flex items-center justify-between ${convId ? 'cursor-pointer hover:border-brand-500/30 transition-all' : ''}`}
+            >
               <div>
                 <p className="text-white font-medium">{appt.buyerName}</p>
                 <p className="text-surface-400 text-sm">
@@ -57,7 +101,8 @@ export default function Appointments() {
                 {appt.status}
               </span>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

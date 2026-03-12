@@ -3,6 +3,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('autolander', {
+  fetchFeedHtml: (url) => ipcRenderer.invoke('feed:fetch-html', url),
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
+
   // Agent connection
   agent: {
     login: (opts) => ipcRenderer.invoke('agent:login', opts),
@@ -25,6 +28,7 @@ contextBridge.exposeInMainWorld('autolander', {
     sendMessage: (opts) => ipcRenderer.invoke('fb:send-message', opts),
     startAssistedPost: (opts) => ipcRenderer.invoke('fb:start-assisted-post', opts),
     cancelAssistedPost: () => ipcRenderer.invoke('fb:cancel-assisted-post'),
+    sendInput: (data) => ipcRenderer.invoke('fb:send-input', data),
     onProgress: (cb) => {
       const listener = (_event, data) => cb(data);
       ipcRenderer.on('fb:progress', listener);

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { getBaseUrl, setBaseUrl } from '../api/client';
+import { getBaseUrl } from '../api/client';
 
 export const getAccessToken = () => localStorage.getItem('accessToken');
 export const getRefreshToken = () => localStorage.getItem('refreshToken');
@@ -45,11 +45,11 @@ export function AuthProvider({ children }) {
     return data.accessToken;
   }, [apiFetch]);
 
-  const login = async (serverUrl, username, password) => {
+  const login = async (username, password) => {
     setError(null);
-    setBaseUrl(serverUrl);
+    const base = getBaseUrl();
 
-    const response = await fetch(`${serverUrl}/api/auth/login`, {
+    const response = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
@@ -64,7 +64,7 @@ export function AuthProvider({ children }) {
     // Connect agent WS if in Electron
     if (window.autolander?.agent) {
       window.autolander.agent.login({
-        serverUrl,
+        serverUrl: base,
         accessToken: data.accessToken,
       }).catch(err => console.warn('[auth] Agent connect failed:', err));
     }
@@ -72,11 +72,11 @@ export function AuthProvider({ children }) {
     return data.user;
   };
 
-  const register = async (serverUrl, userData) => {
+  const register = async (userData) => {
     setError(null);
-    setBaseUrl(serverUrl);
+    const base = getBaseUrl();
 
-    const response = await fetch(`${serverUrl}/api/auth/register`, {
+    const response = await fetch(`${base}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(userData),
@@ -131,8 +131,18 @@ export function AuthProvider({ children }) {
           const newToken = await rotateTokens();
           me = await fetchMe(newToken);
         }
-        if (me) setUser(me);
-        else clearTokens();
+        if (me) {
+          setUser(me);
+          // Connect agent WS + start inbox polling on session restore
+          if (window.autolander?.agent) {
+            const base = getBaseUrl();
+            const activeToken = getAccessToken();
+            window.autolander.agent.login({
+              serverUrl: base,
+              accessToken: activeToken,
+            }).catch(err => console.warn('[auth] Agent connect on restore failed:', err));
+          }
+        } else clearTokens();
       } catch {
         clearTokens();
         setUser(null);

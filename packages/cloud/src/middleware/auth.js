@@ -3,9 +3,9 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 
-const ACCESS_TOKEN_EXPIRY = '15m';
-const REFRESH_TOKEN_EXPIRY = '7d';
-const ACCESS_TOKEN_EXPIRES_IN_SECONDS = 900;
+const ACCESS_TOKEN_EXPIRY = '24h';
+const REFRESH_TOKEN_EXPIRY = '30d';
+const ACCESS_TOKEN_EXPIRES_IN_SECONDS = 86400;
 
 function generateEphemeralSecret(envName) {
   const secret = crypto.randomBytes(64).toString('hex');

@@ -17,9 +17,11 @@
 const path = require('path');
 const fs = require('fs');
 const { FacebookPoster } = require('./facebook-poster');
+const { DATA_DIR, ensureDirs } = require('./paths');
 
-const DATA_DIR = process.env.AUTO_SALES_DATA_DIR || path.join(__dirname, '../data');
 const PHOTOS_DIR = path.join(DATA_DIR, 'photos');
+ensureDirs();
+fs.mkdirSync(PHOTOS_DIR, { recursive: true });
 
 const VIEWPORT = { width: 1366, height: 768 };
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes for user to review + publish

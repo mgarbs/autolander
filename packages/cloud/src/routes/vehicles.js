@@ -19,6 +19,9 @@ module.exports = function createVehiclesRouter(prisma) {
     const { status, search, limit = '100', offset = '0' } = req.query;
     const where = { orgId: req.orgId };
     if (status) where.status = status;
+    if (req.query.fbPosted !== undefined) {
+      where.fbPosted = req.query.fbPosted === 'true';
+    }
     if (search) {
       where.OR = [
         { vin: { contains: search, mode: 'insensitive' } },
@@ -38,6 +41,34 @@ module.exports = function createVehiclesRouter(prisma) {
     ]);
 
     res.json({ vehicles, total });
+  });
+
+  // Mark a vehicle as posted to Facebook
+  router.put('/mark-posted', async (req, res) => {
+    const { vehicleId, vin, postUrl, postId, postedAt } = req.body;
+    if (!vehicleId && !vin) {
+      return res.status(400).json({ error: 'vehicleId or vin is required.' });
+    }
+
+    const where = { orgId: req.orgId };
+    if (vehicleId) {
+      where.id = vehicleId;
+    } else {
+      where.vin = vin;
+    }
+
+    const vehicle = await prisma.vehicle.findFirst({ where });
+    if (!vehicle) return res.status(404).json({ error: 'Vehicle not found.' });
+
+    const updated = await prisma.vehicle.update({
+      where: { id: vehicle.id },
+      data: {
+        fbPosted: true,
+        fbPostDate: postedAt ? new Date(postedAt) : new Date(),
+      },
+    });
+
+    res.json({ success: true, vehicle: updated });
   });
 
   router.get('/:id', async (req, res) => {

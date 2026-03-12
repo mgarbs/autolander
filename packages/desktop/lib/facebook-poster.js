@@ -40,22 +40,24 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const { encryptCookies, decryptCookies } = require('./fb-crypto');
+const {
+  DATA_DIR,
+  SESSIONS_DIR,
+  SCREENSHOTS_DIR,
+  LOGS_DIR,
+  TEMP_DIR,
+  ensureDirs
+} = require('./paths');
 
 // Add stealth plugin to avoid detection
 puppeteer.use(StealthPlugin());
 
-const DATA_DIR = process.env.AUTO_SALES_DATA_DIR || path.join(__dirname, '../data');
-const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
-const SCREENSHOTS_DIR = path.join(DATA_DIR, 'screenshots');
 const PHOTOS_DIR = path.join(DATA_DIR, 'photos');
-const LOG_DIR = path.join(DATA_DIR, 'logs');
+const LOG_DIR = LOGS_DIR;
 
 // Ensure directories exist
-[SESSIONS_DIR, SCREENSHOTS_DIR, PHOTOS_DIR, LOG_DIR].forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-});
+ensureDirs();
+fs.mkdirSync(PHOTOS_DIR, { recursive: true });
 
 // --- File logger ---
 const LOG_FILE = path.join(LOG_DIR, 'fb-poster.log');
@@ -252,8 +254,8 @@ class FacebookPoster {
       console.log('[poster] Using residential proxy:', process.env.PROXY_URL);
     }
 
-    // Use system chromium in Docker
-    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
+    const { getChromePath } = require('./chrome-path');
+    const executablePath = getChromePath();
     this.log(`Launch config: headless=${this.headless} executablePath=${executablePath || 'bundled'}`);
 
     this.browser = await puppeteer.launch({
@@ -579,54 +581,51 @@ class FacebookPoster {
    * @returns {string} FB vehicle type to select
    */
   resolveVehicleType(vehicle) {
-    // Explicit vehicle_type field takes priority
-    const vt = (vehicle.vehicle_type || '').toLowerCase().trim();
-    if (vt) {
-      const typeMap = {
-        // Car/van
-        'car': 'Car/van', 'car/van': 'Car/van', 'van': 'Car/van',
-        'sedan': 'Car/van', 'suv': 'Car/van', 'truck': 'Car/van',
-        'pickup': 'Car/van', 'coupe': 'Car/van', 'wagon': 'Car/van',
-        'hatchback': 'Car/van', 'convertible': 'Car/van', 'minivan': 'Car/van',
-        'crossover': 'Car/van', 'estate': 'Car/van', 'saloon': 'Car/van',
-        // Motorcycle
-        'motorcycle': 'Motorcycle', 'bike': 'Motorcycle', 'motorbike': 'Motorcycle',
-        // Power sport
-        'power sport': 'Power sport', 'powersport': 'Power sport',
-        'atv': 'Power sport', 'utv': 'Power sport', 'quad': 'Power sport',
-        'snowmobile': 'Power sport', 'jet ski': 'Power sport',
-        'side-by-side': 'Power sport', 'go-kart': 'Power sport',
-        'dirtbike': 'Power sport', 'dirt bike': 'Power sport',
-        'scooter': 'Power sport',
-        // Motorhome/caravan
-        'motorhome': 'Motorhome/caravan', 'caravan': 'Motorhome/caravan',
-        'motorhome/caravan': 'Motorhome/caravan', 'rv': 'Motorhome/caravan',
-        'camper': 'Motorhome/caravan', 'campervan': 'Motorhome/caravan',
-        // Trailer
-        'trailer': 'Trailer', 'flatbed': 'Trailer', 'utility trailer': 'Trailer',
-        'cargo trailer': 'Trailer', 'horse trailer': 'Trailer',
-        // Boat
-        'boat': 'Boat', 'yacht': 'Boat', 'pontoon': 'Boat', 'sailboat': 'Boat',
-        'kayak': 'Boat', 'canoe': 'Boat', 'jet boat': 'Boat',
-        // Commercial/Industrial
-        'commercial': 'Commercial/Industrial', 'industrial': 'Commercial/Industrial',
-        'commercial/industrial': 'Commercial/Industrial',
-        'box truck': 'Commercial/Industrial', 'dump truck': 'Commercial/Industrial',
-        'semi': 'Commercial/Industrial', 'tractor': 'Commercial/Industrial',
-        // Other
-        'other': 'Other'
-      };
-      if (typeMap[vt]) return typeMap[vt];
-    }
+    const typeMap = {
+      // Car/van
+      'car': 'Car/van', 'car/van': 'Car/van', 'van': 'Car/van',
+      'sedan': 'Car/van', 'suv': 'Car/van', 'truck': 'Car/van',
+      'pickup': 'Car/van', 'coupe': 'Car/van', 'wagon': 'Car/van',
+      'hatchback': 'Car/van', 'convertible': 'Car/van', 'minivan': 'Car/van',
+      'crossover': 'Car/van', 'estate': 'Car/van', 'saloon': 'Car/van',
+      'pickup truck': 'Car/van', '4x4': 'Car/van',
+      // Motorcycle
+      'motorcycle': 'Motorcycle', 'bike': 'Motorcycle', 'motorbike': 'Motorcycle',
+      // Power sport
+      'power sport': 'Power sport', 'powersport': 'Power sport',
+      'atv': 'Power sport', 'utv': 'Power sport', 'quad': 'Power sport',
+      'snowmobile': 'Power sport', 'jet ski': 'Power sport',
+      'side-by-side': 'Power sport', 'go-kart': 'Power sport',
+      'dirtbike': 'Power sport', 'dirt bike': 'Power sport',
+      'scooter': 'Power sport',
+      // Motorhome/caravan
+      'motorhome': 'Motorhome/caravan', 'caravan': 'Motorhome/caravan',
+      'motorhome/caravan': 'Motorhome/caravan', 'rv': 'Motorhome/caravan',
+      'camper': 'Motorhome/caravan', 'campervan': 'Motorhome/caravan',
+      // Trailer
+      'trailer': 'Trailer', 'flatbed': 'Trailer', 'utility trailer': 'Trailer',
+      'cargo trailer': 'Trailer', 'horse trailer': 'Trailer',
+      // Boat
+      'boat': 'Boat', 'yacht': 'Boat', 'pontoon': 'Boat', 'sailboat': 'Boat',
+      'kayak': 'Boat', 'canoe': 'Boat', 'jet boat': 'Boat',
+      // Commercial/Industrial
+      'commercial': 'Commercial/Industrial', 'industrial': 'Commercial/Industrial',
+      'commercial/industrial': 'Commercial/Industrial',
+      'box truck': 'Commercial/Industrial', 'dump truck': 'Commercial/Industrial',
+      'semi': 'Commercial/Industrial', 'tractor': 'Commercial/Industrial',
+      // Other
+      'other': 'Other'
+    };
 
-    // Infer from body_style if no explicit type
-    const bs = (vehicle.body_style || '').toLowerCase();
-    if (['motorcycle', 'bike', 'motorbike'].includes(bs)) return 'Motorcycle';
-    if (['boat', 'yacht', 'pontoon'].includes(bs)) return 'Boat';
-    if (['rv', 'motorhome', 'camper', 'caravan'].includes(bs)) return 'Motorhome/caravan';
-    if (['trailer'].includes(bs)) return 'Trailer';
+    // 1. Check explicit vehicle_type first (may not exist in DB but support it anyway)
+    const vt = (vehicle.vehicle_type || vehicle.vehicleType || '').toLowerCase().trim();
+    if (vt && typeMap[vt]) return typeMap[vt];
 
-    // Default: Car/van (most common)
+    // 2. Check bodyStyle (the field that actually exists in the DB - camelCase)
+    const bs = (vehicle.bodyStyle || vehicle.body_style || '').toLowerCase().trim();
+    if (bs && typeMap[bs]) return typeMap[bs];
+
+    // 3. Default: Car/van (most common for dealerships)
     return 'Car/van';
   }
 
@@ -732,29 +731,77 @@ class FacebookPoster {
     const targetType = this.resolveVehicleType(vehicle);
     this.log(` Selecting vehicle type: ${targetType}...`);
 
+    // Select vehicle type with robust option finding
     const vehicleTypeDropdown = await this.findFieldByLabel('Vehicle type');
     if (vehicleTypeDropdown) {
+      // Click to open the dropdown
       await vehicleTypeDropdown.click();
-      await humanDelay(1000, 2000);
+      await humanDelay(2000, 3000);
 
-      // Find and click the matching option
+      // Try multiple strategies to find and click the option
       const selected = await this.page.evaluate((target) => {
         const lower = target.toLowerCase();
-        for (const o of document.querySelectorAll('[role="option"]')) {
-          const text = o.textContent?.trim() || '';
-          if (text.toLowerCase() === lower) {
-            o.click();
-            return text;
+
+        // Strategy 1: role="option" (standard)
+        const optionSelectors = [
+          '[role="option"]',
+          '[role="menuitemradio"]',
+          '[role="menuitem"]',
+          '[role="listbox"] [role="option"]',
+          '[role="menu"] [role="menuitemradio"]',
+          '[role="menu"] [role="menuitem"]'
+        ];
+
+        for (const sel of optionSelectors) {
+          for (const o of document.querySelectorAll(sel)) {
+            const text = (o.textContent || '').trim();
+            if (text.toLowerCase() === lower) {
+              o.scrollIntoView({ block: 'center' });
+              o.click();
+              return text;
+            }
           }
         }
-        // Partial match fallback
-        for (const o of document.querySelectorAll('[role="option"]')) {
-          const text = o.textContent?.trim() || '';
-          if (text.toLowerCase().includes(lower) || lower.includes(text.toLowerCase())) {
-            o.click();
-            return text;
+
+        // Strategy 2: partial match on any of those selectors
+        for (const sel of optionSelectors) {
+          for (const o of document.querySelectorAll(sel)) {
+            const text = (o.textContent || '').trim();
+            if (text.toLowerCase().includes(lower) || lower.includes(text.toLowerCase())) {
+              o.scrollIntoView({ block: 'center' });
+              o.click();
+              return text;
+            }
           }
         }
+
+        // Strategy 3: Find any visible element in a popup/overlay/listbox whose text matches
+        // FB often renders dropdown popups as floating divs at the end of the body
+        const popupContainers = document.querySelectorAll('[role="listbox"], [role="menu"], [role="dialog"], [data-visualcompletion="ignore-dynamic"]');
+        for (const container of popupContainers) {
+          if (container.offsetParent === null) continue;
+          const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) {
+            const nodeText = walker.currentNode.textContent.trim();
+            if (nodeText.toLowerCase() === lower) {
+              // Click the closest clickable parent
+              let el = walker.currentNode.parentElement;
+              for (let i = 0; i < 5; i++) {
+                if (!el) break;
+                if (el.getAttribute('role') || el.tagName === 'A' || el.onclick || el.style?.cursor === 'pointer') {
+                  el.scrollIntoView({ block: 'center' });
+                  el.click();
+                  return nodeText;
+                }
+                el = el.parentElement;
+              }
+              // Just click the direct parent span/div
+              walker.currentNode.parentElement.click();
+              return nodeText;
+            }
+          }
+        }
+
         return null;
       }, targetType);
 
@@ -762,15 +809,54 @@ class FacebookPoster {
         this._selectedVehicleType = selected;
         this.log(` Selected vehicle type: "${selected}"`);
       } else {
-        this.log(` WARNING: "${targetType}" not found, defaulting to first option`);
-        const first = await this.page.evaluate(() => {
-          const opt = document.querySelector('[role="option"]');
-          if (opt) { const t = opt.textContent?.trim(); opt.click(); return t; }
-          return null;
+        // Strategy 4: Try keyboard navigation - type the first few chars to filter
+        this.log(` Option "${targetType}" not found via click, trying keyboard...`);
+        await this.page.keyboard.type(targetType.substring(0, 3), { delay: 100 });
+        await humanDelay(1000, 1500);
+        await this.page.keyboard.press('Enter');
+        await humanDelay(1000, 1500);
+
+        // Check if it worked by looking at the dropdown text
+        const currentText = await this.page.evaluate(() => {
+          const vt = [...document.querySelectorAll('label[role="combobox"]')]
+            .find(l => l.textContent.trim().toLowerCase().includes('vehicle type') || l.textContent.trim().toLowerCase().startsWith('vehicle type'));
+          return vt ? vt.textContent.trim() : '';
         });
-        this._selectedVehicleType = first || 'Car/van';
+
+        if (currentText && currentText.toLowerCase() !== 'vehicle type') {
+          this._selectedVehicleType = currentText.replace(/vehicle type/i, '').trim() || 'Car/van';
+          this.log(` Selected vehicle type via keyboard: "${this._selectedVehicleType}"`);
+        } else {
+          this.log(' WARNING: Could not select vehicle type, defaulting to Car/van');
+          this._selectedVehicleType = 'Car/van';
+        }
       }
-      await humanDelay(1500, 3000);
+
+      await humanDelay(2000, 3000);
+
+      // Verify selection worked: check if additional form fields appeared
+      const fieldCount = await this.page.evaluate(() => {
+        return [...document.querySelectorAll('label[role="combobox"]')].filter(l => l.offsetParent !== null).length;
+      });
+      this.log(` Form fields after vehicle type selection: ${fieldCount}`);
+
+      if (fieldCount <= 2) {
+        this.log(' WARNING: Vehicle type may not have been selected (only 2 fields visible). Retrying...');
+        // Retry: click dropdown again and try first available option
+        await vehicleTypeDropdown.click();
+        await humanDelay(2000, 3000);
+        await this.page.evaluate(() => {
+          const selectors = ['[role="option"]', '[role="menuitemradio"]', '[role="menuitem"]'];
+          for (const sel of selectors) {
+            const first = document.querySelector(sel);
+            if (first) {
+              first.click();
+              return;
+            }
+          }
+        });
+        await humanDelay(2000, 3000);
+      }
     } else {
       this._selectedVehicleType = 'Car/van';
       this.log('Vehicle type dropdown not found (may already be set)');
@@ -975,6 +1061,61 @@ class FacebookPoster {
   }
 
   /**
+   * Generate a compelling FB Marketplace description using Claude AI.
+   */
+  async generateDescription(vehicle) {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      this.log('No ANTHROPIC_API_KEY set, skipping AI description');
+      return null;
+    }
+
+    try {
+      const client = new Anthropic();
+      const vehicleInfo = [
+        vehicle.year && `Year: ${vehicle.year}`,
+        vehicle.make && `Make: ${vehicle.make}`,
+        vehicle.model && `Model: ${vehicle.model}`,
+        vehicle.trim && `Trim: ${vehicle.trim}`,
+        vehicle.price && `Price: $${Number(vehicle.price).toLocaleString()}`,
+        vehicle.mileage && `Mileage: ${Number(vehicle.mileage).toLocaleString()} miles`,
+        vehicle.color && `Color: ${vehicle.color}`,
+        vehicle.bodyStyle && `Body Style: ${vehicle.bodyStyle}`,
+        vehicle.transmission && `Transmission: ${vehicle.transmission}`,
+        vehicle.fuelType && `Fuel Type: ${vehicle.fuelType}`,
+        vehicle.vin && `VIN: ${vehicle.vin}`,
+      ].filter(Boolean).join('\n');
+
+      const response = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 500,
+        messages: [{
+          role: 'user',
+          content: `Write a Facebook Marketplace vehicle listing description that will SELL this car fast. Use proven techniques that work on FB Marketplace:
+
+- Start with an attention-grabbing opening line (e.g. "Don't miss this one!" or "Priced to move!")
+- Highlight the top 3-4 selling points (low miles, clean title, one owner, great condition, fuel economy, etc.)
+- Use short punchy sentences - FB buyers scan quickly
+- Include a sense of urgency (e.g. "Won't last at this price")
+- End with a clear call to action (e.g. "Message me today for a test drive!")
+- Add "Financing available. Trade-ins welcome." at the end
+- Include the VIN if available
+- Keep it 5-8 lines max. No hashtags. No emojis. No price (it goes in a separate field).
+
+Vehicle details:
+${vehicleInfo}`
+        }]
+      });
+
+      const desc = response.content[0].text.trim();
+      this.log(` AI description generated (${desc.length} chars)`);
+      return desc;
+    } catch (e) {
+      this.log(` AI description generation failed: ${e.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Fill in the vehicle listing form.
    *
    * Adapts dynamically to whichever vehicle type was selected — different types
@@ -1013,37 +1154,44 @@ class FacebookPoster {
 
     // Value mappings (supports US + GB locale variants)
     const bodyStyleMap = {
-      'sedan': ['Sedan', 'Saloon'],
-      'saloon': ['Saloon', 'Sedan'],
-      'suv': ['4x4', 'SUV', 'Estate'],
-      '4x4': ['4x4', 'SUV'],
-      'crossover': ['4x4', 'SUV', 'Estate'],
-      'coupe': ['Coupe'],
-      'convertible': ['Convertible'],
-      'wagon': ['Wagon', 'Estate'],
-      'estate': ['Estate', 'Wagon'],
-      'station wagon': ['Wagon', 'Estate'],
-      'van': ['Van'],
-      'hatchback': ['Hatchback'],
-      'minivan': ['Minivan', 'MPV/People carrier'],
-      'mpv': ['MPV/People carrier', 'Minivan'],
-      'pickup truck': ['Pickup truck', 'Truck', 'Other'],
-      'pickup': ['Pickup truck', 'Truck', 'Other'],
-      'truck': ['Truck', 'Pickup truck', 'Other'],
-      'small car': ['Small car', 'Compact'],
-      'compact': ['Compact', 'Small car']
+      // US options first, then UK/international variants, then 'Other' as last resort
+      'sedan': ['Sedan', 'Saloon', 'Other'],
+      'saloon': ['Saloon', 'Sedan', 'Other'],
+      'coupe': ['Coupe', 'Coupé', 'Other'],
+      'coupé': ['Coupé', 'Coupe', 'Other'],
+      'hatchback': ['Hatchback', 'Other'],
+      'suv': ['SUV', 'SUV/Crossover', '4x4', 'Other'],
+      'crossover': ['SUV', 'SUV/Crossover', '4x4', 'Other'],
+      'sport utility': ['SUV', 'SUV/Crossover', '4x4', 'Other'],
+      'convertible': ['Convertible', 'Other'],
+      'wagon': ['Wagon', 'Station Wagon', 'Estate', 'Other'],
+      'station wagon': ['Wagon', 'Station Wagon', 'Estate', 'Other'],
+      'estate': ['Estate', 'Wagon', 'Station Wagon', 'Other'],
+      'van': ['Van', 'Other'],
+      'minivan': ['Minivan', 'Mini Van', 'MPV/People carrier', 'Other'],
+      'mini van': ['Minivan', 'Mini Van', 'MPV/People carrier', 'Other'],
+      'mpv': ['MPV/People carrier', 'Minivan', 'Other'],
+      'people carrier': ['MPV/People carrier', 'Minivan', 'Other'],
+      'pickup': ['Truck', 'Pickup Truck', 'Pickup', 'Other'],
+      'pickup truck': ['Truck', 'Pickup Truck', 'Pickup', 'Other'],
+      'truck': ['Truck', 'Pickup Truck', 'Other'],
+      'small car': ['Small car', 'Compact', 'Other'],
+      'compact': ['Small car', 'Compact', 'Hatchback', 'Other'],
+      'subcompact': ['Small car', 'Compact', 'Hatchback', 'Other'],
+      '4x4': ['4x4', 'SUV', 'Other'],
+      'other': ['Other'],
     };
     const conditionMap = {
-      'new': ['New', 'Excellent'],
-      'like new': ['Like New', 'Excellent'],
+      'new': ['Excellent'],
+      'like new': ['Excellent'],
       'excellent': ['Excellent'],
       'very good': ['Very good'],
-      'used': ['Good', 'Used - Good'],
-      'good': ['Good', 'Used - Good'],
+      'used': ['Good'],
+      'good': ['Good'],
       'fair': ['Fair'],
       'poor': ['Poor'],
-      'certified': ['Certified', 'Excellent'],
-      'certified pre-owned': ['Certified', 'Excellent']
+      'certified': ['Excellent'],
+      'certified pre-owned': ['Excellent']
     };
     const fuelMap = {
       'gasoline': ['Gasoline', 'Petrol'],
@@ -1065,16 +1213,6 @@ class FacebookPoster {
       'stick': ['Manual', 'Manual transmission'],
       'standard': ['Manual', 'Manual transmission']
     };
-
-    const suvModelHints = [
-      'cherokee', 'grand cherokee', 'wrangler', 'compass', 'renegade',
-      'rav4', 'highlander', '4runner', 'cr-v', 'pilot', 'passport', 'hr-v',
-      'rogue', 'murano', 'pathfinder', 'kicks', 'escape', 'explorer', 'edge',
-      'bronco', 'equinox', 'traverse', 'tahoe', 'suburban', 'blazer',
-      'sorento', 'sportage', 'telluride', 'santa fe', 'palisade', 'tucson',
-      'cx-3', 'cx-30', 'cx-5', 'cx-9', 'outback', 'forester', 'ascent',
-      'x1', 'x3', 'x5', 'x7', 'glc', 'gle', 'qx50', 'qx60', 'q5', 'q7'
-    ];
 
     // Helper: check if a dropdown label exists on the page (supports locale variants)
     const hasDropdown = (...labels) => {
@@ -1156,21 +1294,18 @@ class FacebookPoster {
     // --- DROPDOWN: Body style (Car/van only) ---
     if (hasDropdown('Body style', 'Body type')) {
       this.log('Setting Body style...');
-      const rawBody = vehicle.body_style || 'Sedan';
+      const rawBody = vehicle.bodyStyle || vehicle.body_style || 'Sedan';
       const normBody = normalizeUiText(rawBody);
       let bodyVal = bodyStyleMap[normBody] || [rawBody];
-      const normDrive = normalizeUiText(vehicle.drivetrain || '');
-      const isLikely4x4 = normDrive.includes('4wd') || normDrive.includes('awd') || normDrive.includes('4x4');
-      const normModel = normalizeUiText(`${vehicle.make || ''} ${vehicle.model || ''}`);
-      const looksLikeSuvModel = suvModelHints.some(h => normModel.includes(h));
       if (!bodyStyleMap[normBody]) {
-        if (normBody.includes('suv') || normBody.includes('crossover')) {
-          bodyVal = (isLikely4x4 || looksLikeSuvModel) ? ['4x4', 'SUV', 'Estate'] : ['4x4', 'SUV', 'Estate', 'Other'];
+        if (normBody.includes('suv') || normBody.includes('crossover') || normBody.includes('sport utility')) {
+          bodyVal = ['SUV', 'SUV/Crossover', '4x4', 'Other'];
         }
-        else if (normBody.includes('pickup') || normBody.includes('truck')) bodyVal = ['Truck', 'Pickup truck', 'Other'];
-        else if (normBody.includes('wagon')) bodyVal = ['Wagon', 'Estate'];
-      } else if (normBody.includes('suv') || normBody.includes('crossover')) {
-        bodyVal = (isLikely4x4 || looksLikeSuvModel) ? ['4x4', 'SUV', 'Estate'] : ['4x4', 'SUV', 'Estate', 'Other'];
+        else if (normBody.includes('pickup') || normBody.includes('truck')) bodyVal = ['Truck', 'Pickup Truck', 'Other'];
+        else if (normBody.includes('wagon')) bodyVal = ['Wagon', 'Station Wagon', 'Estate', 'Other'];
+        else if (normBody.includes('sedan') || normBody.includes('saloon')) bodyVal = ['Sedan', 'Saloon', 'Other'];
+        else if (normBody.includes('coupe') || normBody.includes('coupé')) bodyVal = ['Coupe', 'Coupé', 'Other'];
+        else if (normBody.includes('van')) bodyVal = ['Minivan', 'Van', 'Other'];
       }
       if (await this.selectDropdown(['Body style', 'Body type'], bodyVal)) {
         fieldsFound++;
@@ -1181,7 +1316,7 @@ class FacebookPoster {
     // --- DROPDOWN: Exterior colour (most types except Other) ---
     if (hasDropdown('Exterior colour', 'Exterior color')) {
       this.log('Setting Exterior color...');
-      const extColor = await this.matchColorToFB(vehicle.exterior_color);
+      const extColor = await this.matchColorToFB(vehicle.exteriorColor || vehicle.exterior_color || vehicle.color);
       if (await this.selectDropdown(['Exterior colour', 'Exterior color'], extColor)) {
         fieldsFound++;
       } else { fieldsMissed++; }
@@ -1191,7 +1326,7 @@ class FacebookPoster {
     // --- DROPDOWN: Interior colour (Car/van, Power sport, Motorhome, Trailer, Boat, Commercial) ---
     if (hasDropdown('Interior colour', 'Interior color')) {
       this.log('Setting Interior color...');
-      const intColor = await this.matchColorToFB(vehicle.interior_color);
+      const intColor = await this.matchColorToFB(vehicle.interiorColor || vehicle.interior_color || 'Black');
       if (await this.selectDropdown(['Interior colour', 'Interior color'], intColor)) {
         fieldsFound++;
       } else { fieldsMissed++; }
@@ -1216,7 +1351,32 @@ class FacebookPoster {
     // --- DROPDOWN: Vehicle condition (Car/van only) ---
     if (hasDropdown('Vehicle condition', 'Condition')) {
       this.log('Setting Vehicle condition...');
-      const condVal = conditionMap[(vehicle.condition || 'used').toLowerCase()] || ['Good', 'Used - Good'];
+      let condVal;
+      const rawCondition = (vehicle.condition || '').toLowerCase().trim();
+
+      if (rawCondition && conditionMap[rawCondition]) {
+        // Explicit condition provided by feed - use it
+        condVal = conditionMap[rawCondition];
+      } else {
+        // Infer condition from year and mileage
+        const currentYear = new Date().getFullYear();
+        const vehicleAge = currentYear - (vehicle.year || currentYear);
+        const mileage = vehicle.mileage || 0;
+
+        if (vehicleAge <= 1 && mileage < 20000) {
+          condVal = ['Excellent'];
+        } else if (vehicleAge <= 4 && mileage < 60000) {
+          condVal = ['Very good'];
+        } else if (vehicleAge <= 8 && mileage < 100000) {
+          condVal = ['Good'];
+        } else if (mileage < 150000) {
+          condVal = ['Fair'];
+        } else {
+          condVal = ['Poor'];
+        }
+        this.log(` Inferred condition from year=${vehicle.year}, mileage=${mileage}: ${condVal[0]}`);
+      }
+
       if (await this.selectDropdown(['Vehicle condition', 'Condition'], condVal)) {
         fieldsFound++;
       } else { fieldsMissed++; }
@@ -1226,7 +1386,7 @@ class FacebookPoster {
     // --- DROPDOWN: Fuel type (all except Trailer and Other) ---
     if (hasDropdown('Fuel type')) {
       this.log('Setting Fuel type...');
-      const rawFuel = vehicle.fuel_type || 'Petrol';
+      const rawFuel = vehicle.fuelType || vehicle.fuel_type || 'Gasoline';
       const fuelVal = fuelMap[rawFuel.toLowerCase()] || [rawFuel];
       if (await this.selectDropdown('Fuel type', fuelVal)) {
         fieldsFound++;
@@ -1256,11 +1416,18 @@ class FacebookPoster {
     await humanDelay(500, 1000);
 
     // --- TEXTAREA: Description (all types) ---
-    this.log('Typing Description...');
+    this.log('Generating AI description...');
     const descField = await this.findFieldByLabel('Description') ||
                        await this.page.$('textarea');
     if (descField) {
-      let desc = vehicle.generated_content?.description || vehicle.description || '';
+      // Try AI-generated description first, then fallbacks
+      let desc = vehicle.generatedDescription || vehicle.generated_content?.description || null;
+      if (!desc) {
+        desc = await this.generateDescription(vehicle);
+      }
+      if (!desc) {
+        desc = vehicle.description || '';
+      }
       if (!desc) {
         const price = vehicle.price ? `$${Number(vehicle.price).toLocaleString()}` : 'Great price';
         const miles = vehicle.mileage ? `${Number(vehicle.mileage).toLocaleString()} miles` : '';
@@ -1521,9 +1688,9 @@ class FacebookPoster {
     for (let i = 0; i < photoPaths.length; i++) {
       const p = photoPaths[i];
       if (p.startsWith('http')) {
-        // Download to a temp file in PHOTOS_DIR
+        // Download to a temp file in TEMP_DIR
         const ext = (p.match(/\.(jpe?g|png|webp)/i) || ['.jpg'])[0];
-        const localPath = path.join(PHOTOS_DIR, `_dl_${Date.now()}_${i}${ext.startsWith('.') ? ext : '.' + ext}`);
+        const localPath = path.join(TEMP_DIR, `_dl_${Date.now()}_${i}${ext.startsWith('.') ? ext : '.' + ext}`);
         try {
           await this._downloadPhoto(p, localPath);
           this.log(`   Downloaded photo ${i + 1}: ${p.substring(0, 80)}...`);

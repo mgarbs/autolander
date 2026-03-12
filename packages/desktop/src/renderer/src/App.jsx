@@ -1,10 +1,9 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
+﻿import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import Layout from './components/Layout';
 import LoginPage from './pages/LoginPage';
 import SalesDashboard from './pages/SalesDashboard';
 import ManagerDashboard from './pages/ManagerDashboard';
-import LeadPipeline from './pages/LeadPipeline';
 import LeadDetailPage from './pages/LeadDetailPage';
 import Inventory from './pages/Inventory';
 import Settings from './pages/Settings';
@@ -47,7 +46,6 @@ export default function App() {
         <Route path="/" element={<Navigate to={isManager ? '/manager' : '/sales'} replace />} />
         <Route path="/sales" element={<SalesDashboard />} />
         <Route path="/manager" element={<ManagerDashboard />} />
-        <Route path="/leads" element={<LeadPipeline />} />
         <Route path="/leads/:buyerId" element={<LeadDetailPage />} />
         <Route path="/inventory" element={<Inventory />} />
         <Route path="/post" element={<AssistedPost />} />

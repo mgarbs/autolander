@@ -43,6 +43,9 @@ export default function LeadRow({ lead }) {
               </Badge>
             )}
           </div>
+          {lead.vehicleSummary && lead.vehicleSummary !== 'N/A' && (
+            <p className="text-xs font-medium text-surface-400 mb-1 truncate">{lead.vehicleSummary}</p>
+          )}
           <div className="flex items-center gap-4 text-xs font-medium text-surface-500">
             <div className="flex items-center gap-1.5">
               <MessageSquare size={12} className="text-brand-500/60" />

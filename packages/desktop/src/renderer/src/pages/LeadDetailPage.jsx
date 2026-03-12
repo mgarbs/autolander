@@ -1,44 +1,60 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import LeadDetail from '../components/LeadDetail';
 import { getLead } from '../api/client';
+import { useRealtime } from '../context/RealtimeContext';
 import { ArrowLeft, RefreshCw, AlertCircle } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 export default function LeadDetailPage() {
   const { buyerId } = useParams();
   const navigate = useNavigate();
+  const { lastEvents } = useRealtime();
   const [lead, setLead] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const abortRef = useRef(null);
 
-  const load = async () => {
-    setLoading(true);
+  const load = useCallback(async (showLoading = true, signal) => {
+    if (showLoading) setLoading(true);
     try {
-      const data = await getLead(buyerId);
+      const data = await getLead(buyerId, signal ? { signal } : {});
       setLead(data);
     } catch (e) {
+      if (e.name === 'AbortError') return;
       setError(e.message);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
-  };
+  }, [buyerId]);
 
   useEffect(() => {
-    load();
-  }, [buyerId]);
+    const ac = new AbortController();
+    abortRef.current = ac;
+    load(true, ac.signal);
+    return () => ac.abort();
+  }, [load]);
+
+  useEffect(() => {
+    if (lastEvents.lead && lastEvents.lead.data?.buyerId === buyerId) {
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+      load(false, ac.signal);
+    }
+  }, [lastEvents.lead, buyerId, load]);
 
   return (
     <div className="space-y-6 pb-12">
       <div className="flex items-center justify-between">
         <button
-          onClick={() => navigate('/leads')}
+          onClick={() => navigate('/sales')}
           className="group flex items-center gap-2 text-xs font-black uppercase tracking-widest text-surface-500 hover:text-brand-400 transition-all"
         >
           <div className="p-2 rounded-xl bg-surface-900 border border-surface-800 group-hover:border-brand-500/30 group-hover:text-brand-400 group-hover:shadow-glow-blue transition-all">
             <ArrowLeft size={14} />
           </div>
-          Back to Smart Pipeline
+          Back to Sales Hub
         </button>
         
         <button 

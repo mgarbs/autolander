@@ -1,4 +1,4 @@
-import { NavLink, useLocation, useNavigate } from 'react-router-dom';
+﻿import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   Users,
@@ -8,7 +8,8 @@ import {
   Settings,
   LogOut,
   ChevronRight,
-  ShieldCheck
+  ShieldCheck,
+  Calendar
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
@@ -16,8 +17,8 @@ import { useAuth } from '../context/AuthContext';
 const navItems = [
   { to: '/sales', label: 'Sales Hub', icon: LayoutDashboard },
   { to: '/manager', label: 'Manager Center', icon: ShieldCheck },
-  { to: '/leads', label: 'Smart Pipeline', icon: GitBranch },
   { to: '/inventory', label: 'Inventory Management', icon: CarFront },
+  { to: '/appointments', label: 'Appointments', icon: Calendar },
   { to: '/post', label: 'Post to Market', icon: Send },
   { to: '/settings', label: 'Configuration', icon: Settings },
 ];
@@ -54,15 +55,15 @@ export default function Sidebar() {
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = location.pathname === item.to;
-          
+
           return (
             <NavLink
               key={item.to}
               to={item.to}
               className={({ isActive }) => `
                 group relative flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-300
-                ${isActive 
-                  ? 'bg-brand-500/10 text-white' 
+                ${isActive
+                  ? 'bg-brand-500/10 text-white'
                   : 'text-surface-400 hover:text-surface-100 hover:bg-surface-900/50'}
               `}
             >
@@ -70,13 +71,13 @@ export default function Sidebar() {
                 <motion.div
                   layoutId="sidebar-active"
                   className="absolute left-0 w-1 h-6 bg-brand-500 rounded-r-full"
-                  transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                  transition={{ type: "spring", stiffness: 300, damping: 30 }}  
                 />
               )}
-              
+
               <Icon className={`w-5 h-5 transition-transform duration-300 group-hover:scale-110 ${isActive ? 'text-brand-500' : 'text-surface-500 group-hover:text-brand-400'}`} />
               <span className="flex-1">{item.label}</span>
-              
+
               {isActive && (
                 <ChevronRight className="w-4 h-4 text-brand-500/50" />
               )}

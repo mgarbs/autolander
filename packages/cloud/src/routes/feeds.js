@@ -2,6 +2,7 @@
 
 const express = require('express');
 const { requireRole } = require('../middleware/auth');
+const feedSync = require('../services/feed-sync');
 
 module.exports = function createFeedsRouter(prisma) {
   const router = express.Router();
@@ -71,8 +72,30 @@ module.exports = function createFeedsRouter(prisma) {
     });
     if (!feed) return res.status(404).json({ error: 'Feed not found.' });
 
-    // TODO: Phase 4 — trigger feed-sync service
-    res.json({ success: true, message: 'Feed sync queued.' });
+    const result = await feedSync.syncFeed(feed, prisma);
+    res.json({ success: true, ...result });
+  });
+
+  // Sync with pre-fetched HTML (for sites with bot protection)
+  router.post('/:id/sync-html', requireRole('ADMIN', 'MANAGER'), async (req, res) => {
+    const { html } = req.body;
+    if (!html || typeof html !== 'string') {
+      return res.status(400).json({ error: 'Missing html in request body.' });
+    }
+
+    const feed = await prisma.inventoryFeed.findFirst({
+      where: { id: req.params.id, orgId: req.orgId },
+    });
+    if (!feed) return res.status(404).json({ error: 'Feed not found.' });
+
+    // Parse the pre-fetched HTML
+    const { parseFeedHtml } = require('@autolander/shared/feed-parsers');
+    const parsedVehicles = parseFeedHtml(html, feed.feedUrl, feed.feedType);
+
+    // Now run the same sync logic as the normal sync endpoint
+    // but with the pre-parsed vehicles instead of fetching
+    const result = await feedSync.syncFeedWithVehicles(feed, parsedVehicles, prisma);
+    res.json({ success: true, ...result });
   });
 
   // Get sync logs for a feed

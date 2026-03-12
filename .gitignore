@@ -14,6 +14,9 @@ packages/cloud/prisma/migrations/
 # Electron
 packages/desktop/release/
 
+# Puppeteer Chrome cache (CI downloads fresh per platform)
+packages/desktop/.chromium/
+
 # Data
 *.session
 *.cookies
@@ -22,3 +25,9 @@ data/
 # IDE
 .vscode/
 .idea/
+
+# Local tooling / debug scripts
+.claude/
+.codex-tasks/
+_*.js
+packages/cloud/_*.sql

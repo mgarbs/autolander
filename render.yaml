@@ -5,6 +5,8 @@ services:
     plan: starter
     dockerfilePath: packages/cloud/Dockerfile
     dockerContext: .
+    autoDeploy: true
+    buildFilter: { paths: ["packages/cloud/**"] }
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -18,6 +20,24 @@ services:
         value: "*"
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        sync: false
+      - key: NODE_ENV
+        value: production
     healthCheckPath: /health
 
 databases:

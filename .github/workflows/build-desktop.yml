@@ -1,0 +1,86 @@
+name: Build Desktop Installers
+
+on:
+  push:
+    tags:
+      - 'v*'          # Push a tag like v1.0.0 to trigger builds
+  workflow_dispatch:    # Manual trigger from GitHub Actions tab
+
+env:
+  VITE_API_URL: ${{ secrets.VITE_API_URL }}
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            artifact: "*.exe"
+          - os: macos-latest
+            platform: mac
+            artifact: "*.dmg"
+          - os: ubuntu-latest
+            platform: linux
+            artifact: "*.AppImage"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install root dependencies
+        run: npm install
+
+      - name: Install desktop dependencies
+        working-directory: packages/desktop
+        run: npm install
+
+      - name: Download Chrome for Puppeteer
+        working-directory: packages/desktop
+        run: npx puppeteer browsers install chrome
+
+      - name: Build renderer
+        working-directory: packages/desktop
+        run: npx vite build --config src/renderer/vite.config.js src/renderer
+
+      - name: Build installer (${{ matrix.platform }})
+        working-directory: packages/desktop
+        run: npx electron-builder --${{ matrix.platform }} --config electron-builder.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoLander-${{ matrix.platform }}
+          path: packages/desktop/release/${{ matrix.artifact }}
+          if-no-files-found: warn
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          generate_release_notes: true
+          files: artifacts/**/*

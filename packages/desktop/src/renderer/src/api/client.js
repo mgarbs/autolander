@@ -1,5 +1,7 @@
 // Configurable base URL for cloud API
-let BASE_URL = localStorage.getItem('serverUrl') || 'http://localhost:3000';
+// In production builds, VITE_API_URL is baked in at build time
+const DEFAULT_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+let BASE_URL = localStorage.getItem('serverUrl') || DEFAULT_API_URL;
 
 export function setBaseUrl(url) {
   BASE_URL = url;
@@ -17,15 +19,72 @@ function getAuthHeaders() {
   return headers;
 }
 
+let _refreshPromise = null;
+
+async function tryRefreshToken() {
+  // Deduplicate concurrent refresh attempts
+  if (_refreshPromise) return _refreshPromise;
+
+  _refreshPromise = (async () => {
+    const refreshToken = localStorage.getItem('refreshToken');
+    if (!refreshToken) return false;
+
+    try {
+      const res = await fetch(`${BASE_URL}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (data.accessToken) {
+        localStorage.setItem('accessToken', data.accessToken);
+        if (data.refreshToken) localStorage.setItem('refreshToken', data.refreshToken);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  })();
+
+  try {
+    return await _refreshPromise;
+  } finally {
+    _refreshPromise = null;
+  }
+}
+
 async function fetchJSON(path, options = {}) {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const { signal } = options;
+  let res = await fetch(`${BASE_URL}${path}`, {
     headers: { ...getAuthHeaders(), ...options.headers },
     ...options,
   });
+
+  // On 401, try refreshing the token and retry once
+  if (res.status === 401) {
+    const refreshed = await tryRefreshToken();
+    if (refreshed) {
+      res = await fetch(`${BASE_URL}${path}`, {
+        headers: { ...getAuthHeaders(), ...options.headers },
+        ...options,
+      });
+    }
+  }
+
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
+    // If still 401 after refresh attempt, redirect to login
+    if (res.status === 401) {
+      localStorage.removeItem('accessToken');
+      localStorage.removeItem('refreshToken');
+      window.location.hash = '#/login';
+    }
     throw new Error(body.error || `API error: ${res.status}`);
   }
+  // If the request was aborted while waiting for the body, bail out
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   return res.json();
 }
 
@@ -50,6 +109,10 @@ function toLeadFormat(conv) {
     id: conv.id,
     buyerId: conv.buyerId || conv.id,
     buyerName: conv.buyerName,
+    buyerEmail: conv.buyerEmail || null,
+    buyerPhone: conv.buyerPhone || null,
+    appointment: conv.appointment || null,
+    createdAt: conv.createdAt,
     score,
     sentimentScore: score,
     state: (conv.state || 'NEW').toLowerCase(),
@@ -103,39 +166,40 @@ function toInventoryFormat(v) {
 
 // --- API functions ---
 
-export async function getStats() {
+export async function getStats({ signal } = {}) {
   const [pipeline, vehiclesRes, appointmentsRes] = await Promise.all([
-    fetchJSON('/api/conversations/pipeline'),
-    fetchJSON('/api/vehicles'),
-    fetchJSON('/api/appointments'),
+    fetchJSON('/api/conversations/pipeline', { signal }),
+    fetchJSON('/api/vehicles', { signal }),
+    fetchJSON('/api/appointments', { signal }),
   ]);
   const appts = appointmentsRes.appointments || [];
-  const todayStr = new Date().toDateString();
+  const now = new Date();
+  const upcoming = appts.filter(a =>
+    new Date(a.scheduledTime) >= now && a.status !== 'CANCELLED'
+  );
   return {
-    todayAppointments: appts.filter(a =>
-      new Date(a.scheduledTime).toDateString() === todayStr
-    ).length,
+    todayAppointments: upcoming.length,
     vehicles: vehiclesRes.total || 0,
     posted: (vehiclesRes.vehicles || []).filter(v => v.fbPosted).length,
   };
 }
 
-export async function getLeads(params = {}) {
+export async function getLeads(params = {}, { signal } = {}) {
   const qs = new URLSearchParams();
   if (params.sentiment) qs.set('sentiment', params.sentiment);
   if (params.limit) qs.set('limit', params.limit);
   const query = qs.toString();
-  const data = await fetchJSON(`/api/conversations${query ? '?' + query : ''}`);
+  const data = await fetchJSON(`/api/conversations${query ? '?' + query : ''}`, { signal });
   return (Array.isArray(data) ? data : []).map(toLeadFormat);
 }
 
-export async function getLead(id) {
-  const data = await fetchJSON(`/api/conversations/${encodeURIComponent(id)}`);
+export async function getLead(id, { signal } = {}) {
+  const data = await fetchJSON(`/api/conversations/${encodeURIComponent(id)}`, { signal });
   return toLeadFormat(data);
 }
 
-export function getPipeline() {
-  return fetchJSON('/api/conversations/pipeline');
+export function getPipeline({ signal } = {}) {
+  return fetchJSON('/api/conversations/pipeline', { signal });
 }
 
 export function rescoreLeads() {
@@ -146,12 +210,27 @@ export function getTeamStats() {
   return getStats();
 }
 
-export async function getInventory() {
-  const data = await fetchJSON('/api/vehicles');
+export async function getInventory({ signal } = {}) {
+  const data = await fetchJSON('/api/vehicles', { signal });
   return {
     vehicles: (data.vehicles || []).map(toInventoryFormat),
     meta: { total: data.total || 0 },
   };
+}
+
+export async function getPostQueue({ signal } = {}) {
+  const data = await fetchJSON('/api/vehicles?fbPosted=false&status=ACTIVE', { signal });
+  return {
+    vehicles: (data.vehicles || []).map(toInventoryFormat),
+    meta: { total: data.total || 0 },
+  };
+}
+
+export async function markVehiclePosted({ vehicleId, vin, postUrl, postId, postedAt }) {
+  return fetchJSON('/api/vehicles/mark-posted', {
+    method: 'PUT',
+    body: JSON.stringify({ vehicleId, vin, postUrl, postId, postedAt }),
+  });
 }
 
 // --- FB operations (via IPC bridge in Electron) ---
@@ -227,32 +306,24 @@ export function syncFeed(feedId) {
   return fetchJSON(`/api/feeds/${feedId}/sync`, { method: 'POST' });
 }
 
-// --- Google Services ---
-
-export function getGoogleStatus() {
-  return fetchJSON('/api/google/status');
-}
-
-export function uploadGoogleCredentials(json) {
-  return fetchJSON('/api/google/credentials', {
+export function syncFeedHtml(feedId, html) {
+  return fetchJSON(`/api/feeds/${feedId}/sync-html`, {
     method: 'POST',
-    body: JSON.stringify(json),
+    body: JSON.stringify({ html }),
   });
 }
 
-export function getGoogleAuthUrl() {
-  return fetchJSON('/api/google/auth-url');
-}
-
-export function disconnectGoogle() {
-  return fetchJSON('/api/google/token', { method: 'DELETE' });
-}
+// --- Gmail Config ---
 
 export function saveGmailConfig({ address, appPassword }) {
-  return fetchJSON('/api/google/email', {
+  return fetchJSON('/api/dealer-config/email', {
     method: 'PUT',
     body: JSON.stringify({ address, appPassword }),
   });
+}
+
+export function getEmailStatus() {
+  return fetchJSON('/api/dealer-config/email-status');
 }
 
 // --- AI ---
@@ -268,5 +339,18 @@ export function generateResponse(conversationId, buyerMessage) {
   return fetchJSON('/api/ai/generate-response', {
     method: 'POST',
     body: JSON.stringify({ conversationId, buyerMessage }),
+  });
+}
+
+// --- Dealer Contact ---
+
+export function getDealerContact() {
+  return fetchJSON('/api/dealer-config/contact');
+}
+
+export function saveDealerContact({ address, phone }) {
+  return fetchJSON('/api/dealer-config/contact', {
+    method: 'PUT',
+    body: JSON.stringify({ address, phone }),
   });
 }

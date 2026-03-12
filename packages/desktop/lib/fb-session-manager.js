@@ -11,16 +11,16 @@
 const fs = require('fs');
 const path = require('path');
 const { decryptCookies } = require('./fb-crypto');
+const { SESSIONS_DIR, ensureDirs } = require('./paths');
 
-const DATA_DIR = process.env.AUTO_SALES_DATA_DIR || path.join(__dirname, '../data');
-const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 const MAX_SESSION_AGE_DAYS = 7;
 const DEFAULT_REFRESH_INTERVAL_HOURS = Number(process.env.FB_SESSION_REFRESH_INTERVAL_HOURS) || 6;
 
 class FbSessionManager {
   constructor(salespersonId = 'default') {
     this.salespersonId = salespersonId;
-    this.sessionFile = path.join(SESSIONS_DIR, `${salespersonId}_fb_session.json`);
+    ensureDirs();
+    this.sessionFile = path.join(SESSIONS_DIR, `${this.salespersonId}_fb_session.json`);
     this._refreshTimer = null;
   }
 

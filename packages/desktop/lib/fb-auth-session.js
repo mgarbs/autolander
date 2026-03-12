@@ -18,15 +18,13 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
 const { encryptCookies } = require('./fb-crypto');
+const { SESSIONS_DIR, ensureDirs } = require('./paths');
 
 // Register stealth plugin — puppeteer-extra is a singleton so guard against
 // double registration if facebook-poster.js already called use() in this process.
 if (!(puppeteer.plugins || []).some(p => (p.name || p._pluginName) === 'stealth')) {
   puppeteer.use(StealthPlugin());
 }
-
-const DATA_DIR = process.env.AUTO_SALES_DATA_DIR || path.join(__dirname, '../data');
-const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 
 const VIEWPORT = { width: 1366, height: 768 };
 const SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -60,9 +58,7 @@ class FbAuthSession {
   }
 
   async start() {
-    if (!fs.existsSync(SESSIONS_DIR)) {
-      fs.mkdirSync(SESSIONS_DIR, { recursive: true });
-    }
+    ensureDirs();
 
     this._setStatus('starting', 'Launching browser...');
 
@@ -87,7 +83,7 @@ class FbAuthSession {
     this.browser = await puppeteer.launch({
       headless: true,
       args: launchArgs,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      executablePath: require('./chrome-path').getChromePath(),
       defaultViewport: VIEWPORT,
     });
 

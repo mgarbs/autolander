@@ -21,7 +21,6 @@ const MOUSEMOVE_THROTTLE_MS = 50;
 
 export default function FacebookAuth() {
   const canvasRef = useRef(null);
-  const wsRef = useRef(null);
   const navigate = useNavigate();
 
   const [status, setStatus] = useState('connecting'); // connecting | waiting_login | success | error
@@ -42,55 +41,50 @@ export default function FacebookAuth() {
     // RAF draw loop — always draws the latest frame, drops stale ones
     const drawLoop = () => {
       if (frameQueueRef.current.length > 0) {
-        const base64 = frameQueueRef.current[frameQueueRef.current.length - 1];
+        const frame = frameQueueRef.current[frameQueueRef.current.length - 1];
         frameQueueRef.current = [];
         const img = new Image();
         img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        img.src = `data:image/jpeg;base64,${base64}`;
+        img.src = `data:image/jpeg;base64,${frame.data}`;
       }
       rafRef.current = requestAnimationFrame(drawLoop);
     };
     rafRef.current = requestAnimationFrame(drawLoop);
 
-    // Connect to the backend WebSocket stream (pass JWT for non-local auth)
-    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const accessToken = localStorage.getItem('accessToken');
-    const tokenParam = accessToken ? `?token=${encodeURIComponent(accessToken)}` : '';
-    const ws = new WebSocket(`${wsProtocol}//${location.host}/fb-auth/stream${tokenParam}`);
-    wsRef.current = ws;
-
-    ws.onopen = () => setStatusBoth('waiting_login');
-
-    ws.onmessage = (evt) => {
+    // Initialize FB login via IPC
+    const startSession = async () => {
       try {
-        const msg = JSON.parse(evt.data);
-        if (msg.type === 'frame') {
-          frameQueueRef.current.push(msg.data);
-        } else if (msg.type === 'status') {
-          setStatusBoth(msg.state);
-          setMessage(msg.message || '');
-          if (msg.state === 'success') {
-            setTimeout(() => navigate('/settings'), 2500);
-          }
-        }
-      } catch (_) {}
-    };
-
-    ws.onerror = () => {
-      setStatusBoth('error');
-      setMessage('Could not connect to browser stream. Is the dashboard server running?');
-    };
-
-    ws.onclose = () => {
-      if (statusRef.current !== 'success' && statusRef.current !== 'error') {
+        await window.autolander.fb.login();
+      } catch (err) {
         setStatusBoth('error');
-        setMessage('Connection closed unexpectedly.');
+        setMessage(err.message || 'Failed to start Facebook session');
       }
     };
 
+    // Set up IPC listeners
+    const unlistenFrame = window.autolander.fb.onFrame((frame) => {
+      if (frame?.data) {
+        frameQueueRef.current.push(frame);
+      }
+    });
+
+    const unlistenProgress = window.autolander.fb.onProgress((info) => {
+      if (info.status) {
+        setStatusBoth(info.status);
+        if (info.message) setMessage(info.message);
+        
+        if (info.status === 'success') {
+          setTimeout(() => navigate('/settings'), 2500);
+        }
+      }
+    });
+
+    startSession();
+
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      ws.close();
+      if (typeof unlistenFrame === 'function') unlistenFrame();
+      if (typeof unlistenProgress === 'function') unlistenProgress();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -104,9 +98,7 @@ export default function FacebookAuth() {
   };
 
   const send = (event) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(event));
-    }
+    window.autolander.fb.sendInput(event);
   };
 
   const handleMouseMove = (e) => {
@@ -250,7 +242,7 @@ export default function FacebookAuth() {
            </div>
            
            <div className="text-[9px] font-bold text-surface-500 uppercase tracking-widest italic max-w-sm text-center md:text-right leading-relaxed">
-             Interact with the window above. Your login data is transmitted via secure websocket and never stored on-disk unencrypted.
+             Interact with the window above. Your login data is transmitted via a secure encrypted bridge and never stored on-disk unencrypted.
            </div>
         </div>
       </div>

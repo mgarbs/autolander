@@ -6,9 +6,9 @@
   "main": "src/main/index.js",
   "scripts": {
     "dev": "concurrently \"npm run dev:renderer\" \"npm run dev:electron\"",
-    "dev:renderer": "cd src/renderer && npx vite",
-    "dev:electron": "wait-on http://localhost:5173 && electron .",
-    "build:renderer": "cd src/renderer && npx vite build",
+    "dev:renderer": "npx vite --config src/renderer/vite.config.js src/renderer",
+    "dev:electron": "wait-on http://127.0.0.1:5173 && electron .",
+    "build:renderer": "npx vite build --config src/renderer/vite.config.js src/renderer",
     "build": "npm run build:renderer && electron-builder",
     "start": "electron ."
   },

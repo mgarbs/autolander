@@ -1,18 +1,21 @@
+import { useState, useEffect } from 'react';
 import { useInventory } from '../hooks/useInventory';
+import { useRealtime } from '../context/RealtimeContext';
 import Badge from '../components/Badge';
+import FilterDropdown from '../components/FilterDropdown';
 import { 
   CarFront, 
   Search, 
-  Filter, 
   MapPin, 
   History, 
   ExternalLink,
   DollarSign,
   Zap,
   Tag,
-  Share2
+  Share2,
+  RefreshCw
 } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 
 function formatPrice(price) {
   if (!price) return 'N/A';
@@ -20,14 +23,78 @@ function formatPrice(price) {
 }
 
 export default function Inventory() {
-  const { inventory, loading } = useInventory();
-  const vehicles = (inventory?.vehicles || []).filter(v => v.listings?.facebook_marketplace?.posted);
+  const { inventory, loading, refresh } = useInventory();
+  const { lastEvents } = useRealtime();
+  const [showRefreshBanner, setShowRefreshBanner] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterMake, setFilterMake] = useState('All');
+  const [filterBody, setFilterBody] = useState('All');
+  const [filterStatus, setFilterStatus] = useState('All');
+  const [sortBy, setSortBy] = useState('price-asc');
 
-  const live = vehicles.filter(v => v.status === 'available').length;
-  const sold = vehicles.filter(v => v.status === 'sold' || v.status === 'potentially_sold').length;
+  useEffect(() => {
+    if (lastEvents.inventory) {
+      setShowRefreshBanner(true);
+    }
+  }, [lastEvents.inventory]);
+
+  const handleRefresh = () => {
+    setShowRefreshBanner(false);
+    refresh();
+  };
+
+  const allVehicles = inventory?.vehicles || [];
+  const makes = [...new Set(allVehicles.map(v => v.make).filter(Boolean))].sort();
+  const bodyStyles = [...new Set(allVehicles.map(v => (v.body_style || v.bodyStyle || '').trim()).filter(Boolean))].sort();
+
+  const q = searchQuery.toLowerCase().trim();
+  let vehicles = allVehicles.filter(v => {
+    if (q) {
+      const haystack = `${v.year} ${v.make} ${v.model} ${v.trim || ''} ${v.vin || ''} ${v.exterior_color || ''}`.toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    if (filterMake !== 'All' && v.make !== filterMake) return false;
+    if (filterBody !== 'All' && (v.body_style || v.bodyStyle || '') !== filterBody) return false;
+    if (filterStatus !== 'All' && (v.status || 'available') !== filterStatus) return false;
+    return true;
+  });
+
+  vehicles.sort((a, b) => {
+    switch (sortBy) {
+      case 'price-asc': return (Number(a.price) || 0) - (Number(b.price) || 0);
+      case 'price-desc': return (Number(b.price) || 0) - (Number(a.price) || 0);
+      case 'year-desc': return (Number(b.year) || 0) - (Number(a.year) || 0);
+      case 'year-asc': return (Number(a.year) || 0) - (Number(b.year) || 0);
+      default: return 0;
+    }
+  });
+
+  const live = allVehicles.filter(v => (v.status || 'available') === 'available').length;
+  const sold = allVehicles.filter(v => v.status === 'sold' || v.status === 'potentially_sold').length;
 
   return (
     <div className="space-y-8 pb-12">
+      <AnimatePresence>
+        {showRefreshBanner && (
+          <motion.div 
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="overflow-hidden"
+          >
+            <button 
+              onClick={handleRefresh}
+              className="w-full bg-brand-500/10 border border-brand-500/20 py-3 rounded-2xl flex items-center justify-center gap-3 group hover:bg-brand-500/20 transition-all"
+            >
+              <RefreshCw size={16} className="text-brand-500 group-hover:rotate-180 transition-transform duration-500" />
+              <span className="text-sm font-black uppercase tracking-widest text-brand-400">
+                New inventory updates available — click to refresh
+              </span>
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <header className="flex flex-col md:flex-row md:items-end justify-between gap-6">
         <div className="space-y-1">
           <div className="flex items-center gap-2 text-brand-500 font-bold text-xs uppercase tracking-widest">
@@ -38,24 +105,69 @@ export default function Inventory() {
             Inventory <span className="text-brand-500">Assets</span>
           </h1>
           <p className="text-surface-500 font-medium">
-            {vehicles.length} live on Marketplace &middot; {live} available &middot; {sold} sold
+            {allVehicles.length} total vehicles &middot; {live} available &middot; {sold} sold
           </p>
         </div>
         
         <div className="flex items-center gap-3">
           <div className="relative group">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-surface-600 group-focus-within:text-brand-500 transition-colors" />
-            <input 
-              type="text" 
+            <input
+              type="text"
               placeholder="Search VIN or Model..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9 pr-4 py-2.5 bg-surface-900 border border-surface-800 rounded-xl text-xs font-bold text-surface-400 focus:outline-none focus:border-brand-500/50 transition-all w-64"
             />
           </div>
-          <button className="p-2.5 bg-surface-900 border border-surface-800 rounded-xl text-surface-400 hover:text-white transition-colors">
-            <Filter size={18} />
-          </button>
         </div>
       </header>
+
+      {/* Filter Toolbar */}
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="w-48">
+          <FilterDropdown
+            label="Make"
+            value={filterMake}
+            onChange={setFilterMake}
+            options={[{ value: 'All', label: 'All Makes' }, ...makes.map(m => ({ value: m, label: m }))]}
+          />
+        </div>
+        <div className="w-48">
+          <FilterDropdown
+            label="Body Type"
+            value={filterBody}
+            onChange={setFilterBody}
+            options={[{ value: 'All', label: 'All Body Styles' }, ...bodyStyles.map(b => ({ value: b, label: b }))]}
+          />
+        </div>
+        <div className="w-48">
+          <FilterDropdown
+            label="Status"
+            value={filterStatus}
+            onChange={setFilterStatus}
+            options={[
+              { value: 'All', label: 'All Status' },
+              { value: 'available', label: 'Available' },
+              { value: 'sold', label: 'Sold' },
+              { value: 'potentially_sold', label: 'Potentially Sold' },
+            ]}
+          />
+        </div>
+        <div className="w-48 ml-auto">
+          <FilterDropdown
+            label="Sort By"
+            value={sortBy}
+            onChange={setSortBy}
+            options={[
+              { value: 'price-asc', label: 'Price: Low → High' },
+              { value: 'price-desc', label: 'Price: High → Low' },
+              { value: 'year-desc', label: 'Year: Newest' },
+              { value: 'year-asc', label: 'Year: Oldest' },
+            ]}
+          />
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {loading ? (

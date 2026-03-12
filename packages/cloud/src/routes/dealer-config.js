@@ -53,6 +53,26 @@ module.exports = function createDealerConfigRouter(prisma) {
     res.json({ success: true, dealer: config });
   });
 
+  router.get('/contact', async (req, res) => {
+    const org = await prisma.organization.findFirst({ where: { id: req.orgId } });
+    res.json({
+      address: org?.address || '',
+      phone: org?.phone || '',
+    });
+  });
+
+  router.put('/contact', requireRole('ADMIN', 'MANAGER'), async (req, res) => {
+    const { address, phone } = req.body;
+    await prisma.organization.update({
+      where: { id: req.orgId },
+      data: {
+        address: address || null,
+        phone: phone || null,
+      },
+    });
+    res.json({ success: true });
+  });
+
   router.post('/sync', requireRole('ADMIN', 'MANAGER'), async (req, res) => {
     const dispatcher = req.app.get('commandDispatcher');
     if (!dispatcher) {
@@ -69,6 +89,33 @@ module.exports = function createDealerConfigRouter(prisma) {
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // --- Gmail / Email config ---
+
+  router.get('/email-status', async (req, res) => {
+    const settings = await prisma.orgSettings.findUnique({ where: { orgId: req.orgId } });
+    const configured = !!(
+      (settings?.gmailAddress && settings?.gmailAppPassword) ||
+      (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD)
+    );
+    res.json({
+      configured,
+      address: settings?.gmailAddress || process.env.GMAIL_USER || null,
+    });
+  });
+
+  router.put('/email', requireRole('ADMIN', 'MANAGER'), async (req, res) => {
+    const { address, appPassword } = req.body;
+    if (!address || !appPassword) {
+      return res.status(400).json({ error: 'address and appPassword are required.' });
+    }
+    await prisma.orgSettings.upsert({
+      where: { orgId: req.orgId },
+      update: { gmailAddress: address, gmailAppPassword: appPassword },
+      create: { orgId: req.orgId, gmailAddress: address, gmailAppPassword: appPassword },
+    });
+    res.json({ success: true });
   });
 
   return router;

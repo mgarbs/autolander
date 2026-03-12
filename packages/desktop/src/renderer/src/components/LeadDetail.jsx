@@ -1,13 +1,13 @@
-import Badge from './Badge';
+﻿import Badge from './Badge';
 import ScoreBreakdown from './ScoreBreakdown';
 import TimeAgo from './TimeAgo';
-import { 
-  User, 
-  MessageSquare, 
-  CarFront, 
-  ShieldCheck, 
-  BrainCircuit, 
-  Activity, 
+import {
+  User,
+  MessageSquare,
+  CarFront,
+  ShieldCheck,
+  BrainCircuit,
+  Activity,
   History,
   CheckCircle2,
   XCircle,
@@ -16,7 +16,12 @@ import {
   Flame,
   Zap,
   TrendingUp,
-  MapPin
+  MapPin,
+  Phone,
+  Mail,
+  Calendar,
+  DollarSign,
+  ArrowRightLeft
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 
@@ -27,6 +32,25 @@ export default function LeadDetail({ lead }) {
   const signals = score.signals || [];
   const isHot = (score.sentimentScore || 0) >= 70;
 
+  const financingKeywords = ["finance", "financing", "cash", "loan", "payment"];
+  const financingMsg = lead.messages?.find(m => 
+    m.role === 'buyer' && financingKeywords.some(kw => m.text.toLowerCase().includes(kw))
+  );
+  const financingPreference = financingMsg 
+    ? (financingMsg.text.toLowerCase().includes('cash') ? 'Cash' : 'Financing')
+    : 'Unknown';
+
+  let tradeInVehicle = "None mentioned";
+  if (lead.messages) {
+    const tradeIndex = lead.messages.findIndex(m => m.role === 'buyer' && m.text.toLowerCase().includes('trade'));
+    if (tradeIndex !== -1) {
+      const nextBuyerMsg = lead.messages.slice(tradeIndex + 1).find(m => m.role === 'buyer');
+      if (nextBuyerMsg) {
+        tradeInVehicle = nextBuyerMsg.text;
+      }
+    }
+  }
+
   return (
     <div className="space-y-8 max-w-6xl mx-auto">
       {/* Hero Header */}
@@ -34,18 +58,18 @@ export default function LeadDetail({ lead }) {
         <div className="p-8 flex flex-col md:flex-row md:items-center justify-between gap-8 relative">
           {/* Subtle Background Glow */}
           <div className="absolute right-0 top-0 w-64 h-64 bg-brand-500 blur-[100px] opacity-10 rounded-full" />
-          
+
           <div className="flex items-center gap-6 relative z-10">
              <div className={`w-20 h-20 rounded-3xl flex items-center justify-center border-2 transition-all duration-500 ${
                isHot ? 'bg-rose-500/10 border-rose-500/30 rotate-3' : 'bg-surface-800 border-surface-700'
              }`}>
                <User size={32} className={isHot ? 'text-rose-500' : 'text-brand-500'} />
              </div>
-             
+
              <div>
                 <div className="flex items-center gap-3 mb-2">
                   <h1 className="text-3xl font-black text-white tracking-tighter uppercase leading-none">
-                    {lead.buyerName || 'Buyer Unit ' + lead.buyerId?.slice(-4)}
+                    {lead.buyerName || 'Buyer Unit ' + lead.buyerId?.slice(-4)} 
                   </h1>
                   {isHot && <Badge variant="hot" size="md">HOT OPPORTUNITY</Badge>}
                 </div>
@@ -64,10 +88,10 @@ export default function LeadDetail({ lead }) {
           </div>
 
           <div className="flex items-center gap-6 relative z-10 bg-surface-950/40 p-4 rounded-2xl border border-surface-900/50 backdrop-blur-sm">
-             <div className="text-center px-4 border-r border-surface-900/50">
+             <div className="text-center px-4 border-r border-surface-900/50">  
                 <div className="text-[10px] font-black uppercase tracking-widest text-surface-500 mb-1">AI SCORE</div>
-                <div className={`text-4xl font-black italic tracking-tighter ${
-                  isHot ? 'text-rose-500 animate-pulse' : 'text-brand-500'
+                <div className={`text-4xl font-black italic tracking-tighter ${ 
+                  isHot ? 'text-rose-500 animate-pulse' : 'text-brand-500'      
                 }`}>
                   {score.sentimentScore || 0}%
                 </div>
@@ -111,14 +135,14 @@ export default function LeadDetail({ lead }) {
                   SYNC WITH MESSENGER
                </button>
             </div>
-            
+
             <div className="p-6 space-y-6 max-h-[500px] overflow-y-auto bg-surface-950/20">
               {lead.messages?.length > 0 ? (
                 lead.messages.map((msg, i) => (
                   <div key={i} className={`flex ${msg.role === 'buyer' ? 'justify-start' : 'justify-end'}`}>
                     <div className={`max-w-[80%] rounded-2xl p-4 text-sm font-medium leading-relaxed relative ${
-                      msg.role === 'buyer' 
-                        ? 'bg-surface-900 border border-surface-800 text-surface-200 rounded-bl-none' 
+                      msg.role === 'buyer'
+                        ? 'bg-surface-900 border border-surface-800 text-surface-200 rounded-bl-none'
                         : 'bg-brand-600 border border-brand-500/50 text-white rounded-br-none shadow-glow-blue'
                     }`}>
                       <p className="mb-1">{msg.text}</p>
@@ -127,11 +151,11 @@ export default function LeadDetail({ lead }) {
                       }`}>
                         {msg.role === 'buyer' ? lead.buyerName || 'BUYER' : 'AI RESPONSE'} &middot; {new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </div>
-                      
+
                       {/* Message Tail */}
                       <div className={`absolute bottom-0 w-4 h-4 ${
-                        msg.role === 'buyer' 
-                          ? 'left-[-8px] border-b-[16px] border-b-surface-900 border-l-[16px] border-l-transparent' 
+                        msg.role === 'buyer'
+                          ? 'left-[-8px] border-b-[16px] border-b-surface-900 border-l-[16px] border-l-transparent'
                           : 'right-[-8px] border-b-[16px] border-b-brand-600 border-r-[16px] border-r-transparent'
                       }`} />
                     </div>
@@ -148,6 +172,66 @@ export default function LeadDetail({ lead }) {
 
         {/* Right Column - Context & Signals */}
         <div className="lg:col-span-4 space-y-8">
+          {/* Customer Intel Card */}
+          <div className="glass-card p-6">
+            <h3 className="text-xs font-black uppercase tracking-widest text-surface-500 mb-6 flex items-center gap-2">
+               CUSTOMER INTEL
+            </h3>
+            <div className="space-y-4">
+               <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-surface-500">
+                     <Phone size={12} className="text-brand-500" />
+                     Phone
+                  </div>
+                  <div className="text-xs font-bold text-surface-200">
+                     {lead.buyerPhone || 'Not captured'}
+                  </div>
+               </div>
+               <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-surface-500">
+                     <Mail size={12} className="text-brand-500" />
+                     Email
+                  </div>
+                  <div className="text-xs font-bold text-surface-200">
+                     {lead.buyerEmail || 'Not captured'}
+                  </div>
+               </div>
+               <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-surface-500">
+                     <Calendar size={12} className="text-brand-500" />
+                     Appointment
+                  </div>
+                  <div className="text-xs font-bold text-surface-200">
+                     {lead.appointment ? (
+                       <span className="text-emerald-500 font-black">
+                         {new Date(lead.appointment.scheduledTime).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} at {new Date(lead.appointment.scheduledTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                       </span>
+                     ) : (
+                       'None scheduled'
+                     )}
+                  </div>
+               </div>
+               <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-surface-500">
+                     <DollarSign size={12} className="text-brand-500" />
+                     Financing
+                  </div>
+                  <div className="text-xs font-bold text-surface-200">
+                     {financingPreference}
+                  </div>
+               </div>
+               <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-surface-500">
+                     <ArrowRightLeft size={12} className="text-brand-500" />
+                     Trade-in
+                  </div>
+                  <div className="text-xs font-bold text-surface-200 truncate max-w-[150px]" title={tradeInVehicle}>
+                     {tradeInVehicle}
+                  </div>
+               </div>
+            </div>
+          </div>
+
           {/* Summary Widget */}
           <div className="glass-card p-6 bg-brand-500/5 border-l-4 border-l-brand-500">
              <h3 className="text-xs font-black uppercase tracking-widest text-brand-500 mb-4 flex items-center gap-2">
@@ -163,7 +247,7 @@ export default function LeadDetail({ lead }) {
           <div className="glass-card p-6">
             <h3 className="text-xs font-black uppercase tracking-widest text-surface-500 mb-6 flex items-center justify-between">
                INTENT SIGNALS
-               <Badge variant="brand" size="xs">{signals.length}</Badge>
+               <Badge variant="brand" size="xs">{signals.length}</Badge>        
             </h3>
             <div className="space-y-3">
               {signals.length > 0 ? (
@@ -199,7 +283,7 @@ export default function LeadDetail({ lead }) {
             </h3>
             <div className="grid grid-cols-2 gap-4">
               {[
-                { label: 'Category', value: score.category || 'UNTITLED', icon: ShieldCheck, color: 'text-brand-500' },
+                { label: 'Lead Since', value: lead.createdAt ? new Date(lead.createdAt).toLocaleDateString() : 'N/A', icon: Clock, color: 'text-brand-500' },
                 { label: 'Current State', value: lead.state || 'ACTIVE', icon: Activity, color: 'text-emerald-500' },
                 { label: 'Msg Volume', value: lead.messageCount || 0, icon: MessageSquare, color: 'text-indigo-500' },
                 { label: 'Engagement', value: lead.sentimentScore > 50 ? 'HIGH' : 'LOW', icon: TrendingUp, color: isHot ? 'text-rose-500' : 'text-surface-600' }
@@ -215,7 +299,7 @@ export default function LeadDetail({ lead }) {
                 </div>
               ))}
             </div>
-            
+
             <div className="mt-6 pt-6 border-t border-surface-900/50">
                <div className="flex items-center justify-between text-[10px] font-bold text-surface-600 uppercase tracking-widest">
                   <span className="flex items-center gap-1.5">

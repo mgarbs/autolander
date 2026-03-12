@@ -7,8 +7,11 @@
  */
 
 const crypto = require('crypto');
+const { DATA_DIR, ensureDirs } = require('./paths');
 
 const ALGORITHM = 'aes-256-gcm';
+ensureDirs();
+void DATA_DIR;
 
 function getEncryptionKey() {
   const secret = process.env.FB_SESSION_SECRET || '';
