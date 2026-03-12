@@ -14,6 +14,7 @@ export default defineConfig({
   css: {
     postcss: __dirname,
   },
+  base: './',
   build: {
     outDir: 'dist',
     emptyOutDir: true,
