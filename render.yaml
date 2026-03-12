@@ -42,6 +42,6 @@ services:
 
 databases:
   - name: autolander-db
-    plan: basic
+    plan: basic-256mb
     databaseName: autolander
     postgresMajorVersion: "16"
