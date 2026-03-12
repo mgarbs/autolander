@@ -22,6 +22,8 @@ COPY --from=builder /app/packages/cloud/node_modules/.prisma ./node_modules/.pri
 COPY packages/cloud/ ./
 COPY packages/shared/ ../shared/
 
+RUN mkdir -p node_modules/@autolander && ln -s /app/packages/shared node_modules/@autolander/shared
+
 EXPOSE 3000
 
 ENV NODE_ENV=production
