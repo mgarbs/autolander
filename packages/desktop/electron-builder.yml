@@ -50,5 +50,5 @@ linux:
   category: Office
 publish:
   provider: github
-  owner: autolander
+  owner: mgarbs
   repo: autolander
