@@ -37,20 +37,19 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install dependencies (desktop + shared only)
-        run: npm install -w packages/shared -w packages/desktop
-
-      - name: Copy hoisted node_modules to desktop
+      - name: Install desktop dependencies (non-workspace)
         shell: bash
         run: |
-          # npm workspaces hoists deps to root node_modules
-          # electron-builder needs them in packages/desktop/node_modules
-          # Remove workspace symlinks first (they point to root)
-          rm -rf packages/desktop/node_modules
-          # Copy root hoisted modules as the desktop node_modules
-          cp -r node_modules packages/desktop/node_modules
-          # Ensure shared package is a real copy (not symlink)
-          rm -rf packages/desktop/node_modules/@autolander/shared
+          # Hide root package.json so npm doesn't detect workspaces
+          # This ensures all deps install into packages/desktop/node_modules
+          mv package.json package.json.bak
+          mv package-lock.json package-lock.json.bak 2>/dev/null || true
+          cd packages/desktop
+          npm install
+          cd ../..
+          mv package.json.bak package.json
+          mv package-lock.json.bak package-lock.json 2>/dev/null || true
+          # Copy shared package into desktop node_modules
           mkdir -p packages/desktop/node_modules/@autolander
           cp -r packages/shared packages/desktop/node_modules/@autolander/shared
 
