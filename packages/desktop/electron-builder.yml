@@ -17,10 +17,6 @@ files:
 extraResources:
   - from: src/renderer/dist
     to: renderer
-  - from: .chromium
-    to: chromium
-    filter:
-      - "**/*"
 win:
   target:
     - target: nsis
