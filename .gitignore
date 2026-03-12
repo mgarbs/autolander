@@ -9,7 +9,7 @@ out/
 Thumbs.db
 
 # Prisma
-packages/cloud/prisma/migrations/
+# migrations must be checked in for production deploys
 
 # Electron
 packages/desktop/release/
