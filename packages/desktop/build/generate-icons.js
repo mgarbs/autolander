@@ -1,7 +1,8 @@
 /**
  * Generate app icons for AutoLander Electron app.
  * Pure Node.js - no external dependencies required.
- * Creates a car-themed logo for an auto dealership app.
+ * Renders the Lucide CarFront icon on the brand blue gradient
+ * to match the in-app logo exactly.
  */
 const fs = require('fs');
 const path = require('path');
@@ -9,47 +10,31 @@ const zlib = require('zlib');
 
 const BUILD_DIR = __dirname;
 
+// Brand colors from tailwind.config.js
+const BRAND_500 = { r: 38, g: 101, b: 255 };  // #2665ff
+const BRAND_700 = { r: 29, g: 76, b: 161 };   // #1d4ca1
+
 // ---- PNG generation (raw, no canvas needed) ----
 
 function createPNG(width, height, drawFn) {
-  // RGBA pixel buffer
   const pixels = Buffer.alloc(width * height * 4);
   drawFn(pixels, width, height);
 
-  // Build raw image data with filter bytes
   const rawData = Buffer.alloc(height * (1 + width * 4));
   for (let y = 0; y < height; y++) {
-    rawData[y * (1 + width * 4)] = 0; // filter: None
-    pixels.copy(
-      rawData,
-      y * (1 + width * 4) + 1,
-      y * width * 4,
-      (y + 1) * width * 4
-    );
+    rawData[y * (1 + width * 4)] = 0;
+    pixels.copy(rawData, y * (1 + width * 4) + 1, y * width * 4, (y + 1) * width * 4);
   }
 
   const compressed = zlib.deflateSync(rawData, { level: 9 });
-
-  // PNG signature
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-
-  // IHDR chunk
   const ihdrData = Buffer.alloc(13);
   ihdrData.writeUInt32BE(width, 0);
   ihdrData.writeUInt32BE(height, 4);
-  ihdrData[8] = 8;  // bit depth
-  ihdrData[9] = 6;  // color type: RGBA
-  ihdrData[10] = 0; // compression
-  ihdrData[11] = 0; // filter
-  ihdrData[12] = 0; // interlace
+  ihdrData[8] = 8; ihdrData[9] = 6;
   const ihdr = makeChunk('IHDR', ihdrData);
-
-  // IDAT chunk
   const idat = makeChunk('IDAT', compressed);
-
-  // IEND chunk
   const iend = makeChunk('IEND', Buffer.alloc(0));
-
   return Buffer.concat([signature, ihdr, idat, iend]);
 }
 
@@ -63,7 +48,6 @@ function makeChunk(type, data) {
   return Buffer.concat([length, typeBuffer, data, crc]);
 }
 
-// CRC32 for PNG chunks
 function crc32(buf) {
   let table = crc32.table;
   if (!table) {
@@ -83,14 +67,12 @@ function crc32(buf) {
   return (crc ^ 0xFFFFFFFF) >>> 0;
 }
 
-// Set a pixel in the RGBA buffer
 function setPixel(pixels, width, x, y, r, g, b, a) {
+  x = Math.round(x); y = Math.round(y);
   if (x < 0 || x >= width || y < 0) return;
   const idx = (y * width + x) * 4;
   if (idx + 3 >= pixels.length) return;
-  
-  // Alpha blending
-  if (a < 255) {
+  if (a < 255 && pixels[idx + 3] > 0) {
     const srcA = a / 255;
     const dstA = pixels[idx + 3] / 255;
     const outA = srcA + dstA * (1 - srcA);
@@ -101,139 +83,213 @@ function setPixel(pixels, width, x, y, r, g, b, a) {
       pixels[idx + 3] = Math.round(outA * 255);
     }
   } else {
-    pixels[idx] = r;
-    pixels[idx + 1] = g;
-    pixels[idx + 2] = b;
-    pixels[idx + 3] = a;
+    pixels[idx] = r; pixels[idx + 1] = g; pixels[idx + 2] = b; pixels[idx + 3] = a;
   }
 }
 
-// Fill a circle with basic anti-aliasing
 function fillCircle(pixels, width, cx, cy, radius, r, g, b, a) {
-  const r2 = radius * radius;
-  for (let dy = -Math.ceil(radius); dy <= Math.ceil(radius); dy++) {
-    for (let dx = -Math.ceil(radius); dx <= Math.ceil(radius); dx++) {
-      const dist2 = dx * dx + dy * dy;
-      if (dist2 <= r2) {
-        setPixel(pixels, width, Math.round(cx + dx), Math.round(cy + dy), r, g, b, a);
-      } else if (dist2 <= (radius + 1) * (radius + 1)) {
-        // Very basic AA
-        const alpha = Math.max(0, Math.min(a, a * (1 - (Math.sqrt(dist2) - radius))));
-        setPixel(pixels, width, Math.round(cx + dx), Math.round(cy + dy), r, g, b, Math.round(alpha));
+  for (let dy = -Math.ceil(radius) - 1; dy <= Math.ceil(radius) + 1; dy++) {
+    for (let dx = -Math.ceil(radius) - 1; dx <= Math.ceil(radius) + 1; dx++) {
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist <= radius - 0.5) {
+        setPixel(pixels, width, cx + dx, cy + dy, r, g, b, a);
+      } else if (dist < radius + 0.5) {
+        const aa = Math.max(0, Math.min(1, radius + 0.5 - dist));
+        setPixel(pixels, width, cx + dx, cy + dy, r, g, b, Math.round(a * aa));
       }
     }
   }
 }
 
-// Fill a rectangle
 function fillRect(pixels, width, x, y, w, h, r, g, b, a) {
   for (let dy = 0; dy < h; dy++) {
     for (let dx = 0; dx < w; dx++) {
-      setPixel(pixels, width, Math.round(x + dx), Math.round(y + dy), r, g, b, a);
+      setPixel(pixels, width, x + dx, y + dy, r, g, b, a);
     }
   }
 }
 
-// Draw a rounded rectangle
 function fillRoundedRect(pixels, imgWidth, x, y, w, h, radius, r, g, b, a) {
-  // Fill center
-  fillRect(pixels, imgWidth, x + radius, y, w - 2 * radius, h, r, g, b, a);
-  // Fill left/right strips
-  fillRect(pixels, imgWidth, x, y + radius, radius, h - 2 * radius, r, g, b, a);
-  fillRect(pixels, imgWidth, x + w - radius, y + radius, radius, h - 2 * radius, r, g, b, a);
-  // Fill corners
-  fillCircleQuadrant(pixels, imgWidth, x + radius, y + radius, radius, r, g, b, a, 'tl');
-  fillCircleQuadrant(pixels, imgWidth, x + w - radius - 1, y + radius, radius, r, g, b, a, 'tr');
-  fillCircleQuadrant(pixels, imgWidth, x + radius, y + h - radius - 1, radius, r, g, b, a, 'bl');
-  fillCircleQuadrant(pixels, imgWidth, x + w - radius - 1, y + h - radius - 1, radius, r, g, b, a, 'br');
-}
+  for (let py = 0; py < h; py++) {
+    for (let px = 0; px < w; px++) {
+      let dx = 0, dy = 0;
+      if (px < radius) dx = radius - px;
+      else if (px >= w - radius) dx = px - (w - radius - 1);
+      if (py < radius) dy = radius - py;
+      else if (py >= h - radius) dy = py - (h - radius - 1);
 
-function fillCircleQuadrant(pixels, width, cx, cy, radius, r, g, b, a, quadrant) {
-  const r2 = radius * radius;
-  for (let dy = -radius; dy <= radius; dy++) {
-    for (let dx = -radius; dx <= radius; dx++) {
-      if (dx * dx + dy * dy <= r2) {
-        let draw = false;
-        if (quadrant === 'tl' && dx <= 0 && dy <= 0) draw = true;
-        if (quadrant === 'tr' && dx >= 0 && dy <= 0) draw = true;
-        if (quadrant === 'bl' && dx <= 0 && dy >= 0) draw = true;
-        if (quadrant === 'br' && dx >= 0 && dy >= 0) draw = true;
-        if (draw) setPixel(pixels, width, Math.round(cx + dx), Math.round(cy + dy), r, g, b, a);
+      if (dx > 0 && dy > 0) {
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist <= radius + 0.5) {
+          const aa = Math.min(1, radius + 0.5 - dist);
+          setPixel(pixels, imgWidth, x + px, y + py, r, g, b, Math.round(a * Math.max(0, aa)));
+        }
+      } else {
+        setPixel(pixels, imgWidth, x + px, y + py, r, g, b, a);
       }
     }
   }
+}
+
+// Draw a thick line with anti-aliasing
+function drawLine(pixels, width, x1, y1, x2, y2, thickness, r, g, b, a) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len === 0) return;
+  const nx = -dy / len, ny = dx / len;
+  const half = thickness / 2;
+
+  const minX = Math.floor(Math.min(x1, x2) - half - 1);
+  const maxX = Math.ceil(Math.max(x1, x2) + half + 1);
+  const minY = Math.floor(Math.min(y1, y2) - half - 1);
+  const maxY = Math.ceil(Math.max(y1, y2) + half + 1);
+
+  for (let py = minY; py <= maxY; py++) {
+    for (let px = minX; px <= maxX; px++) {
+      const vx = px - x1, vy = py - y1;
+      const along = (vx * dx + vy * dy) / len;
+      const perp = Math.abs(vx * nx + vy * ny);
+
+      if (along >= -half && along <= len + half && perp <= half + 0.5) {
+        const edgeDist = half + 0.5 - perp;
+        const aa = Math.min(1, edgeDist);
+        // Also soften the line caps
+        let capAA = 1;
+        if (along < 0) capAA = Math.max(0, 1 + along);
+        else if (along > len) capAA = Math.max(0, 1 - (along - len));
+        setPixel(pixels, width, px, py, r, g, b, Math.round(a * Math.max(0, aa) * capAA));
+      }
+    }
+  }
+}
+
+// Draw a rounded rectangle outline (stroke)
+function strokeRoundedRect(pixels, imgWidth, x, y, w, h, radius, thickness, r, g, b, a) {
+  const half = thickness / 2;
+  // We'll check every pixel in the bounding area
+  const pad = Math.ceil(thickness) + 2;
+  for (let py = y - pad; py < y + h + pad; py++) {
+    for (let px = x - pad; px < x + h + pad && px < x + w + pad; px++) {
+      // Distance to the rounded rect border
+      const dist = distToRoundedRect(px, py, x, y, w, h, radius);
+      const d = Math.abs(dist) - half;
+      if (d < 0.5) {
+        const aa = Math.min(1, 0.5 - d);
+        setPixel(pixels, imgWidth, px, py, r, g, b, Math.round(a * Math.max(0, aa)));
+      }
+    }
+  }
+}
+
+// Signed distance from point to rounded rect border
+function distToRoundedRect(px, py, rx, ry, rw, rh, radius) {
+  const cx = rx + rw / 2, cy = ry + rh / 2;
+  const hw = rw / 2, hh = rh / 2;
+  const dx = Math.abs(px - cx) - hw + radius;
+  const dy = Math.abs(py - cy) - hh + radius;
+  if (dx > 0 && dy > 0) return Math.sqrt(dx * dx + dy * dy) - radius;
+  return Math.max(dx, dy) - radius;
+}
+
+// ---- Lucide CarFront icon rendering ----
+// SVG viewBox: 0 0 24 24, stroke-width 2, stroke-linecap round, stroke-linejoin round
+// Paths:
+//   path d="m21 8-2 2-1.5-3.7A2 2 0 0 0 15.646 5H8.4a2 2 0 0 0-1.903 1.257L5 10 3 8"
+//   path d="M7 14h.01"       (left headlight dot)
+//   path d="M17 14h.01"      (right headlight dot)
+//   rect width="18" height="8" x="3" y="10" rx="2"  (car body)
+//   path d="M5 18v2"          (left wheel)
+//   path d="M19 18v2"         (right wheel)
+
+function drawCarFront(pixels, imgWidth, imgHeight, iconX, iconY, iconSize, strokeW) {
+  // Scale from 24x24 viewBox to actual icon size
+  const s = iconSize / 24;
+  const tx = iconX, ty = iconY;
+
+  function sx(x) { return tx + x * s; }
+  function sy(y) { return ty + y * s; }
+
+  const white = { r: 255, g: 255, b: 255 };
+  const a = 255;
+
+  // 1. Car body: rounded rect x=3 y=10 w=18 h=8 rx=2
+  strokeRoundedRect(pixels, imgWidth,
+    sx(3), sy(10), 18 * s, 8 * s, 2 * s, strokeW,
+    white.r, white.g, white.b, a);
+
+  // 2. Roof line: m21 8 -2 2 => line from (21,8) to (19,10)
+  drawLine(pixels, imgWidth, sx(21), sy(8), sx(19), sy(10), strokeW, white.r, white.g, white.b, a);
+
+  // 3. Right windshield slope: (19,10) to (17.5, 6.3)
+  //    -1.5 -3.7 => relative from (19,10): (17.5, 6.3)
+  drawLine(pixels, imgWidth, sx(19), sy(10), sx(17.5), sy(6.3), strokeW, white.r, white.g, white.b, a);
+
+  // 4. Roof top: approximate the arc — from ~(17.5, 6.3) curving to (15.646, 5) then across to (8.4, 5) curving to (~6.5, 6.257)
+  // Simplify: line from (17.5, 6.3) → (16.2, 5.2) → (15.646, 5) → (8.4, 5) → (7.8, 5.2) → (6.5, 6.257)
+  drawLine(pixels, imgWidth, sx(17.5), sy(6.3), sx(16), sy(5.15), strokeW, white.r, white.g, white.b, a);
+  drawLine(pixels, imgWidth, sx(16), sy(5.15), sx(15.646), sy(5), strokeW, white.r, white.g, white.b, a);
+  drawLine(pixels, imgWidth, sx(15.646), sy(5), sx(8.4), sy(5), strokeW, white.r, white.g, white.b, a);
+  drawLine(pixels, imgWidth, sx(8.4), sy(5), sx(8), sy(5.15), strokeW, white.r, white.g, white.b, a);
+  drawLine(pixels, imgWidth, sx(8), sy(5.15), sx(6.5), sy(6.257), strokeW, white.r, white.g, white.b, a);
+
+  // 5. Left windshield slope: from (6.5, 6.257) to (5, 10)
+  drawLine(pixels, imgWidth, sx(6.5), sy(6.257), sx(5), sy(10), strokeW, white.r, white.g, white.b, a);
+
+  // 6. Left mirror: (5,10) to (3,8)
+  drawLine(pixels, imgWidth, sx(5), sy(10), sx(3), sy(8), strokeW, white.r, white.g, white.b, a);
+
+  // 7. Headlight dots at (7, 14) and (17, 14)
+  fillCircle(pixels, imgWidth, sx(7), sy(14), strokeW * 0.7, white.r, white.g, white.b, a);
+  fillCircle(pixels, imgWidth, sx(17), sy(14), strokeW * 0.7, white.r, white.g, white.b, a);
+
+  // 8. Left wheel: line from (5,18) to (5,20)
+  drawLine(pixels, imgWidth, sx(5), sy(18), sx(5), sy(20), strokeW, white.r, white.g, white.b, a);
+
+  // 9. Right wheel: line from (19,18) to (19,20)
+  drawLine(pixels, imgWidth, sx(19), sy(18), sx(19), sy(20), strokeW, white.r, white.g, white.b, a);
 }
 
 // ---- Main drawing function ----
 
 function drawIcon(pixels, width, height) {
-  // Background: Dark Navy #1E293B (Slate 800)
-  const bgR = 30, bgG = 41, bgB = 59;
-  
-  // Fill transparent initially
-  for (let i = 0; i < pixels.length; i += 4) {
-    pixels[i] = 0; pixels[i+1] = 0; pixels[i+2] = 0; pixels[i+3] = 0;
+  // Clear to transparent
+  pixels.fill(0);
+
+  // Draw rounded rectangle background with gradient (brand-500 top to brand-700 bottom)
+  const cornerRadius = Math.round(width * 0.18);
+  for (let y = 0; y < height; y++) {
+    const t = y / (height - 1);
+    const r = Math.round(BRAND_500.r + (BRAND_700.r - BRAND_500.r) * t);
+    const g = Math.round(BRAND_500.g + (BRAND_700.g - BRAND_500.g) * t);
+    const b = Math.round(BRAND_500.b + (BRAND_700.b - BRAND_500.b) * t);
+    for (let x = 0; x < width; x++) {
+      // Check if inside rounded rect
+      let dx = 0, dy2 = 0;
+      if (x < cornerRadius) dx = cornerRadius - x;
+      else if (x >= width - cornerRadius) dx = x - (width - cornerRadius - 1);
+      if (y < cornerRadius) dy2 = cornerRadius - y;
+      else if (y >= height - cornerRadius) dy2 = y - (height - cornerRadius - 1);
+
+      if (dx > 0 && dy2 > 0) {
+        const dist = Math.sqrt(dx * dx + dy2 * dy2);
+        if (dist <= cornerRadius + 0.5) {
+          const aa = Math.min(1, cornerRadius + 0.5 - dist);
+          setPixel(pixels, width, x, y, r, g, b, Math.round(255 * aa));
+        }
+      } else {
+        setPixel(pixels, width, x, y, r, g, b, 255);
+      }
+    }
   }
 
-  // Draw rounded rectangle background
-  const cornerRadius = Math.round(width * 0.18);
-  fillRoundedRect(pixels, width, 0, 0, width, height, cornerRadius, bgR, bgG, bgB, 255);
+  // Draw the CarFront icon centered
+  // Icon occupies ~60% of the icon area, centered
+  const iconSize = width * 0.6;
+  const iconX = (width - iconSize) / 2;
+  const iconY = (height - iconSize) / 2;
+  const strokeWidth = Math.max(1.5, width * 0.04);
 
-  // Car proportions
-  const carW = width * 0.65;
-  const carH = width * 0.35;
-  const carX = (width - carW) / 2;
-  const carY = (height - carH) / 2 - (width * 0.02);
-
-  // Car body colors
-  const carR = 255, carG = 255, carB = 255; // White car
-
-  // 1. Cabin (Top)
-  const cabinW = carW * 0.55;
-  const cabinH = carH * 0.55;
-  const cabinX = carX + carW * 0.22;
-  const cabinY = carY;
-  fillRoundedRect(pixels, width, cabinX, cabinY, cabinW, cabinH, cabinH * 0.45, carR, carG, carB, 255);
-  
-  // 2. Main Body (Bottom)
-  const bodyW = carW;
-  const bodyH = carH * 0.5;
-  const bodyX = carX;
-  const bodyY = carY + carH * 0.4;
-  fillRoundedRect(pixels, width, bodyX, bodyY, bodyW, bodyH, bodyH * 0.35, carR, carG, carB, 255);
-
-  // 3. Windows (Cut out from cabin)
-  const windowGap = Math.max(1, Math.round(width * 0.015));
-  const windowW = (cabinW - windowGap * 3) / 2;
-  const windowH = cabinH * 0.6;
-  const windowX1 = cabinX + windowGap;
-  const windowX2 = cabinX + windowGap * 2 + windowW;
-  const windowY = cabinY + windowGap;
-  
-  // Fill windows with background color to "cut" them
-  fillRoundedRect(pixels, width, windowX1, windowY, windowW, windowH, windowH * 0.2, bgR, bgG, bgB, 255);
-  fillRoundedRect(pixels, width, windowX2, windowY, windowW, windowH, windowH * 0.2, bgR, bgG, bgB, 255);
-
-  // 4. Wheels
-  const wheelRadius = carH * 0.22;
-  const wheelY = bodyY + bodyH * 0.85;
-  const wheelX1 = carX + carW * 0.22;
-  const wheelX2 = carX + carW * 0.78;
-  
-  // Outer wheel (cut out from body)
-  fillCircle(pixels, width, wheelX1, wheelY, wheelRadius, bgR, bgG, bgB, 255);
-  fillCircle(pixels, width, wheelX2, wheelY, wheelRadius, bgR, bgG, bgB, 255);
-  
-  // Inner wheel (rim)
-  fillCircle(pixels, width, wheelX1, wheelY, wheelRadius * 0.5, carR, carG, carB, 255);
-  fillCircle(pixels, width, wheelX2, wheelY, wheelRadius * 0.5, carR, carG, carB, 255);
-
-  // 5. Road line (subtle)
-  const roadW = carW * 1.1;
-  const roadH = Math.max(1, Math.round(width * 0.015));
-  const roadX = (width - roadW) / 2;
-  const roadY = wheelY + wheelRadius + (width * 0.05);
-  fillRect(pixels, width, roadX, roadY, roadW, roadH, 255, 255, 255, 120);
+  drawCarFront(pixels, width, height, iconX, iconY, iconSize, strokeWidth);
 }
 
 // ---- ICO file generation ----
@@ -243,8 +299,8 @@ function createICO(pngBuffers) {
   const headerSize = 6 + numImages * 16;
 
   const header = Buffer.alloc(6);
-  header.writeUInt16LE(0, 0); // reserved
-  header.writeUInt16LE(1, 2); // type: ICO
+  header.writeUInt16LE(0, 0);
+  header.writeUInt16LE(1, 2);
   header.writeUInt16LE(numImages, 4);
 
   const entries = [];
@@ -252,14 +308,13 @@ function createICO(pngBuffers) {
 
   for (const { png, size } of pngBuffers) {
     const entry = Buffer.alloc(16);
-    entry[0] = size >= 256 ? 0 : size; // width
-    entry[1] = size >= 256 ? 0 : size; // height
-    entry[2] = 0; // color palette
-    entry[3] = 0; // reserved
-    entry.writeUInt16LE(1, 4); // color planes
-    entry.writeUInt16LE(32, 6); // bits per pixel
-    entry.writeUInt32LE(png.length, 8); // data size
-    entry.writeUInt32LE(dataOffset, 12); // data offset
+    entry[0] = size >= 256 ? 0 : size;
+    entry[1] = size >= 256 ? 0 : size;
+    entry[2] = 0; entry[3] = 0;
+    entry.writeUInt16LE(1, 4);
+    entry.writeUInt16LE(32, 6);
+    entry.writeUInt32LE(png.length, 8);
+    entry.writeUInt32LE(dataOffset, 12);
     entries.push(entry);
     dataOffset += png.length;
   }
@@ -279,10 +334,7 @@ console.log(`  icon.png: ${png512.length} bytes`);
 console.log('Generating multi-size ICO file...');
 const icoBuffers = SIZES.map(size => {
   console.log(`  Adding ${size}x${size}...`);
-  return {
-    png: createPNG(size, size, drawIcon),
-    size
-  };
+  return { png: createPNG(size, size, drawIcon), size };
 });
 
 const ico = createICO(icoBuffers);
