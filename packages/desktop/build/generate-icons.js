@@ -1,8 +1,7 @@
 /**
  * Generate app icons for AutoLander Electron app.
  * Pure Node.js - no external dependencies required.
- * Creates a 512x512 PNG with blue background and white "AL" text,
- * then creates an ICO file from it.
+ * Creates a car-themed logo for an auto dealership app.
  */
 const fs = require('fs');
 const path = require('path');
@@ -89,15 +88,18 @@ function setPixel(pixels, width, x, y, r, g, b, a) {
   if (x < 0 || x >= width || y < 0) return;
   const idx = (y * width + x) * 4;
   if (idx + 3 >= pixels.length) return;
+  
   // Alpha blending
-  if (a < 255 && pixels[idx + 3] > 0) {
+  if (a < 255) {
     const srcA = a / 255;
     const dstA = pixels[idx + 3] / 255;
     const outA = srcA + dstA * (1 - srcA);
-    pixels[idx] = Math.round((r * srcA + pixels[idx] * dstA * (1 - srcA)) / outA);
-    pixels[idx + 1] = Math.round((g * srcA + pixels[idx + 1] * dstA * (1 - srcA)) / outA);
-    pixels[idx + 2] = Math.round((b * srcA + pixels[idx + 2] * dstA * (1 - srcA)) / outA);
-    pixels[idx + 3] = Math.round(outA * 255);
+    if (outA > 0) {
+      pixels[idx] = Math.round((r * srcA + pixels[idx] * dstA * (1 - srcA)) / outA);
+      pixels[idx + 1] = Math.round((g * srcA + pixels[idx + 1] * dstA * (1 - srcA)) / outA);
+      pixels[idx + 2] = Math.round((b * srcA + pixels[idx + 2] * dstA * (1 - srcA)) / outA);
+      pixels[idx + 3] = Math.round(outA * 255);
+    }
   } else {
     pixels[idx] = r;
     pixels[idx + 1] = g;
@@ -106,13 +108,18 @@ function setPixel(pixels, width, x, y, r, g, b, a) {
   }
 }
 
-// Fill a circle
+// Fill a circle with basic anti-aliasing
 function fillCircle(pixels, width, cx, cy, radius, r, g, b, a) {
   const r2 = radius * radius;
-  for (let dy = -radius; dy <= radius; dy++) {
-    for (let dx = -radius; dx <= radius; dx++) {
-      if (dx * dx + dy * dy <= r2) {
-        setPixel(pixels, width, cx + dx, cy + dy, r, g, b, a);
+  for (let dy = -Math.ceil(radius); dy <= Math.ceil(radius); dy++) {
+    for (let dx = -Math.ceil(radius); dx <= Math.ceil(radius); dx++) {
+      const dist2 = dx * dx + dy * dy;
+      if (dist2 <= r2) {
+        setPixel(pixels, width, Math.round(cx + dx), Math.round(cy + dy), r, g, b, a);
+      } else if (dist2 <= (radius + 1) * (radius + 1)) {
+        // Very basic AA
+        const alpha = Math.max(0, Math.min(a, a * (1 - (Math.sqrt(dist2) - radius))));
+        setPixel(pixels, width, Math.round(cx + dx), Math.round(cy + dy), r, g, b, Math.round(alpha));
       }
     }
   }
@@ -122,7 +129,7 @@ function fillCircle(pixels, width, cx, cy, radius, r, g, b, a) {
 function fillRect(pixels, width, x, y, w, h, r, g, b, a) {
   for (let dy = 0; dy < h; dy++) {
     for (let dx = 0; dx < w; dx++) {
-      setPixel(pixels, width, x + dx, y + dy, r, g, b, a);
+      setPixel(pixels, width, Math.round(x + dx), Math.round(y + dy), r, g, b, a);
     }
   }
 }
@@ -151,46 +158,7 @@ function fillCircleQuadrant(pixels, width, cx, cy, radius, r, g, b, a, quadrant)
         if (quadrant === 'tr' && dx >= 0 && dy <= 0) draw = true;
         if (quadrant === 'bl' && dx <= 0 && dy >= 0) draw = true;
         if (quadrant === 'br' && dx >= 0 && dy >= 0) draw = true;
-        if (draw) setPixel(pixels, width, cx + dx, cy + dy, r, g, b, a);
-      }
-    }
-  }
-}
-
-// Simple bitmap font for "A" and "L" at large scale
-// Each letter is defined on a 7x9 grid, scaled up
-const FONT = {
-  'A': [
-    '..###..',
-    '.##.##.',
-    '##...##',
-    '##...##',
-    '#######',
-    '##...##',
-    '##...##',
-    '##...##',
-    '##...##',
-  ],
-  'L': [
-    '##.....',
-    '##.....',
-    '##.....',
-    '##.....',
-    '##.....',
-    '##.....',
-    '##.....',
-    '##.....',
-    '#######',
-  ],
-};
-
-function drawLetter(pixels, imgWidth, letter, startX, startY, scale, r, g, b, a) {
-  const glyph = FONT[letter];
-  if (!glyph) return;
-  for (let row = 0; row < glyph.length; row++) {
-    for (let col = 0; col < glyph[row].length; col++) {
-      if (glyph[row][col] === '#') {
-        fillRect(pixels, imgWidth, startX + col * scale, startY + row * scale, scale, scale, r, g, b, a);
+        if (draw) setPixel(pixels, width, Math.round(cx + dx), Math.round(cy + dy), r, g, b, a);
       }
     }
   }
@@ -199,49 +167,78 @@ function drawLetter(pixels, imgWidth, letter, startX, startY, scale, r, g, b, a)
 // ---- Main drawing function ----
 
 function drawIcon(pixels, width, height) {
-  // Background: blue #2563EB = rgb(37, 99, 235)
-  const bgR = 37, bgG = 99, bgB = 235;
-
-  // Fill with rounded rect background
-  // First fill transparent
+  // Background: Dark Navy #1E293B (Slate 800)
+  const bgR = 30, bgG = 41, bgB = 59;
+  
+  // Fill transparent initially
   for (let i = 0; i < pixels.length; i += 4) {
-    pixels[i] = 0;
-    pixels[i + 1] = 0;
-    pixels[i + 2] = 0;
-    pixels[i + 3] = 0;
+    pixels[i] = 0; pixels[i+1] = 0; pixels[i+2] = 0; pixels[i+3] = 0;
   }
 
   // Draw rounded rectangle background
   const cornerRadius = Math.round(width * 0.18);
   fillRoundedRect(pixels, width, 0, 0, width, height, cornerRadius, bgR, bgG, bgB, 255);
 
-  // Draw "AL" text centered
-  // Each letter is 7 units wide, 9 units tall
-  // Two letters + 1 unit gap = 15 units wide
-  const scale = Math.round(width / 22); // scale factor for the font grid
-  const textWidth = 15 * scale;
-  const textHeight = 9 * scale;
-  const startX = Math.round((width - textWidth) / 2);
-  const startY = Math.round((height - textHeight) / 2);
+  // Car proportions
+  const carW = width * 0.65;
+  const carH = width * 0.35;
+  const carX = (width - carW) / 2;
+  const carY = (height - carH) / 2 - (width * 0.02);
 
-  // Draw with white
-  drawLetter(pixels, width, 'A', startX, startY, scale, 255, 255, 255, 255);
-  drawLetter(pixels, width, 'L', startX + 8 * scale, startY, scale, 255, 255, 255, 255);
+  // Car body colors
+  const carR = 255, carG = 255, carB = 255; // White car
 
-  // Add a subtle car/road icon below the text - a simple horizontal line
-  const lineY = startY + textHeight + Math.round(scale * 1.5);
-  const lineHeight = Math.round(scale * 0.4) || 2;
-  const lineWidth = Math.round(textWidth * 0.8);
-  const lineX = Math.round((width - lineWidth) / 2);
-  fillRect(pixels, width, lineX, lineY, lineWidth, lineHeight, 255, 255, 255, 200);
+  // 1. Cabin (Top)
+  const cabinW = carW * 0.55;
+  const cabinH = carH * 0.55;
+  const cabinX = carX + carW * 0.22;
+  const cabinY = carY;
+  fillRoundedRect(pixels, width, cabinX, cabinY, cabinW, cabinH, cabinH * 0.45, carR, carG, carB, 255);
+  
+  // 2. Main Body (Bottom)
+  const bodyW = carW;
+  const bodyH = carH * 0.5;
+  const bodyX = carX;
+  const bodyY = carY + carH * 0.4;
+  fillRoundedRect(pixels, width, bodyX, bodyY, bodyW, bodyH, bodyH * 0.35, carR, carG, carB, 255);
+
+  // 3. Windows (Cut out from cabin)
+  const windowGap = Math.max(1, Math.round(width * 0.015));
+  const windowW = (cabinW - windowGap * 3) / 2;
+  const windowH = cabinH * 0.6;
+  const windowX1 = cabinX + windowGap;
+  const windowX2 = cabinX + windowGap * 2 + windowW;
+  const windowY = cabinY + windowGap;
+  
+  // Fill windows with background color to "cut" them
+  fillRoundedRect(pixels, width, windowX1, windowY, windowW, windowH, windowH * 0.2, bgR, bgG, bgB, 255);
+  fillRoundedRect(pixels, width, windowX2, windowY, windowW, windowH, windowH * 0.2, bgR, bgG, bgB, 255);
+
+  // 4. Wheels
+  const wheelRadius = carH * 0.22;
+  const wheelY = bodyY + bodyH * 0.85;
+  const wheelX1 = carX + carW * 0.22;
+  const wheelX2 = carX + carW * 0.78;
+  
+  // Outer wheel (cut out from body)
+  fillCircle(pixels, width, wheelX1, wheelY, wheelRadius, bgR, bgG, bgB, 255);
+  fillCircle(pixels, width, wheelX2, wheelY, wheelRadius, bgR, bgG, bgB, 255);
+  
+  // Inner wheel (rim)
+  fillCircle(pixels, width, wheelX1, wheelY, wheelRadius * 0.5, carR, carG, carB, 255);
+  fillCircle(pixels, width, wheelX2, wheelY, wheelRadius * 0.5, carR, carG, carB, 255);
+
+  // 5. Road line (subtle)
+  const roadW = carW * 1.1;
+  const roadH = Math.max(1, Math.round(width * 0.015));
+  const roadX = (width - roadW) / 2;
+  const roadY = wheelY + wheelRadius + (width * 0.05);
+  fillRect(pixels, width, roadX, roadY, roadW, roadH, 255, 255, 255, 120);
 }
 
 // ---- ICO file generation ----
 
 function createICO(pngBuffers) {
-  // ICO header: 6 bytes
-  // Each entry: 16 bytes
-  // Then PNG data for each entry
   const numImages = pngBuffers.length;
   const headerSize = 6 + numImages * 16;
 
@@ -255,8 +252,8 @@ function createICO(pngBuffers) {
 
   for (const { png, size } of pngBuffers) {
     const entry = Buffer.alloc(16);
-    entry[0] = size >= 256 ? 0 : size; // width (0 = 256)
-    entry[1] = size >= 256 ? 0 : size; // height (0 = 256)
+    entry[0] = size >= 256 ? 0 : size; // width
+    entry[1] = size >= 256 ? 0 : size; // height
     entry[2] = 0; // color palette
     entry[3] = 0; // reserved
     entry.writeUInt16LE(1, 4); // color planes
@@ -272,34 +269,24 @@ function createICO(pngBuffers) {
 
 // ---- Generate all icons ----
 
+const SIZES = [256, 128, 64, 48, 32, 16];
+
 console.log('Generating 512x512 PNG icon...');
 const png512 = createPNG(512, 512, drawIcon);
 fs.writeFileSync(path.join(BUILD_DIR, 'icon.png'), png512);
 console.log(`  icon.png: ${png512.length} bytes`);
 
-console.log('Generating 256x256 PNG for ICO...');
-const png256 = createPNG(256, 256, drawIcon);
+console.log('Generating multi-size ICO file...');
+const icoBuffers = SIZES.map(size => {
+  console.log(`  Adding ${size}x${size}...`);
+  return {
+    png: createPNG(size, size, drawIcon),
+    size
+  };
+});
 
-console.log('Generating additional sizes for ICO...');
-const png48 = createPNG(48, 48, drawIcon);
-const png32 = createPNG(32, 32, drawIcon);
-const png16 = createPNG(16, 16, drawIcon);
-
-console.log('Creating ICO file...');
-const ico = createICO([
-  { png: png256, size: 256 },
-  { png: png48, size: 48 },
-  { png: png32, size: 32 },
-  { png: png16, size: 16 },
-]);
+const ico = createICO(icoBuffers);
 fs.writeFileSync(path.join(BUILD_DIR, 'icon.ico'), ico);
-console.log(`  icon.ico: ${ico.length} bytes`);
-
-// For .icns - electron-builder will fall back to icon.png on non-macOS
-// Create a copy named icon.icns as a placeholder
-// (Real .icns requires macOS iconutil or specialized tooling)
-// electron-builder handles the conversion from .png if .icns is missing
-console.log('Note: icon.icns not generated (requires macOS tooling).');
-console.log('      electron-builder will auto-convert from icon.png on macOS builds.');
+console.log(`  icon.ico: ${ico.length} bytes (${SIZES.length} sizes)`);
 
 console.log('\nDone! Icons generated in:', BUILD_DIR);
