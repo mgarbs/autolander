@@ -3,8 +3,8 @@ name: Build Desktop Installers
 on:
   push:
     tags:
-      - 'v*'          # Push a tag like v1.0.0 to trigger builds
-  workflow_dispatch:    # Manual trigger from GitHub Actions tab
+      - 'v*'
+  workflow_dispatch:
 
 env:
   VITE_API_URL: ${{ secrets.VITE_API_URL }}
@@ -39,13 +39,7 @@ jobs:
 
       - name: Install desktop dependencies
         working-directory: packages/desktop
-        run: npm install --ignore-scripts
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-
-      - name: Install Electron binary
-        working-directory: packages/desktop
-        run: npx electron-builder install-app-deps
+        run: npm install
 
       - name: Link shared package
         run: |
