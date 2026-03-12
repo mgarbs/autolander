@@ -2,7 +2,7 @@ services:
   - type: web
     name: autolander-cloud
     runtime: docker
-    plan: free
+    plan: starter
     dockerfilePath: packages/cloud/Dockerfile
     dockerContext: .
     autoDeploy: true
@@ -42,6 +42,6 @@ services:
 
 databases:
   - name: autolander-db
-    plan: free
+    plan: basic
     databaseName: autolander
     postgresMajorVersion: "16"
