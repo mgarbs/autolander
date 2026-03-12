@@ -37,14 +37,8 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install desktop dependencies
-        working-directory: packages/desktop
-        run: npm install
-
-      - name: Link shared package
-        run: |
-          mkdir -p packages/desktop/node_modules/@autolander
-          cp -r packages/shared packages/desktop/node_modules/@autolander/shared
+      - name: Install dependencies (desktop + shared only)
+        run: npm install -w packages/shared -w packages/desktop
 
       - name: Download Chrome for Puppeteer
         working-directory: packages/desktop
