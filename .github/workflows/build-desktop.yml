@@ -8,6 +8,7 @@ on:
 
 env:
   VITE_API_URL: ${{ secrets.VITE_API_URL }}
+  PUPPETEER_SKIP_DOWNLOAD: "true"
 
 jobs:
   build:
@@ -25,6 +26,7 @@ jobs:
             artifact: "*.AppImage"
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
@@ -34,14 +36,21 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-
-      - name: Install root dependencies
-        run: npm install
 
       - name: Install desktop dependencies
         working-directory: packages/desktop
-        run: npm install
+        run: npm install --ignore-scripts
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
+      - name: Install Electron binary
+        working-directory: packages/desktop
+        run: npx electron-builder install-app-deps
+
+      - name: Link shared package
+        run: |
+          mkdir -p packages/desktop/node_modules/@autolander
+          cp -r packages/shared packages/desktop/node_modules/@autolander/shared
 
       - name: Download Chrome for Puppeteer
         working-directory: packages/desktop
