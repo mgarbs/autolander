@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 /**
  * Platform-specific Chrome executable names.
@@ -88,8 +89,50 @@ function findSystemChrome() {
   }
 
   for (const candidate of candidates) {
+    console.log('[chrome-path] Checking:', candidate, fs.existsSync(candidate) ? 'FOUND' : 'missing');
     if (fs.existsSync(candidate)) return candidate;
   }
+
+  // Fallback: use OS-level search to find any Chromium-based browser
+  try {
+    if (process.platform === 'darwin') {
+      // macOS Spotlight — finds Chrome no matter where it's installed
+      const bundleIds = [
+        'com.google.Chrome',
+        'org.chromium.Chromium',
+        'com.microsoft.edgemac',
+        'com.brave.Browser',
+      ];
+      for (const bid of bundleIds) {
+        try {
+          const appPath = execSync(`mdfind "kMDItemCFBundleIdentifier == '${bid}'" 2>/dev/null`, { encoding: 'utf8' }).trim().split('\n')[0];
+          if (appPath) {
+            // Read CFBundleExecutable from the .app to get the real binary name
+            try {
+              const execName = execSync(`defaults read "${appPath}/Contents/Info" CFBundleExecutable 2>/dev/null`, { encoding: 'utf8' }).trim();
+              const binary = path.join(appPath, 'Contents', 'MacOS', execName);
+              if (fs.existsSync(binary)) {
+                console.log('[chrome-path] Spotlight found:', binary);
+                return binary;
+              }
+            } catch (_) {}
+          }
+        } catch (_) {}
+      }
+    } else if (process.platform === 'linux') {
+      const cmds = ['which google-chrome', 'which google-chrome-stable', 'which chromium-browser', 'which chromium'];
+      for (const cmd of cmds) {
+        try {
+          const result = execSync(cmd + ' 2>/dev/null', { encoding: 'utf8' }).trim();
+          if (result && fs.existsSync(result)) {
+            console.log('[chrome-path] which found:', result);
+            return result;
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+
   return undefined;
 }
 
