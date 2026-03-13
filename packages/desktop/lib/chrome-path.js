@@ -46,15 +46,51 @@ function findChromeIn(dir, maxDepth = 5, depth = 0) {
 }
 
 /**
+ * Find the system-installed Chrome/Chromium browser.
+ */
+function findSystemChrome() {
+  const candidates = [];
+
+  if (process.platform === 'win32') {
+    const prefixes = [
+      process.env.LOCALAPPDATA,
+      process.env['PROGRAMFILES'],
+      process.env['PROGRAMFILES(X86)'],
+    ].filter(Boolean);
+    for (const prefix of prefixes) {
+      candidates.push(path.join(prefix, 'Google', 'Chrome', 'Application', 'chrome.exe'));
+    }
+  } else if (process.platform === 'darwin') {
+    candidates.push('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
+    candidates.push(path.join(process.env.HOME || '', 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome'));
+  } else {
+    // Linux: check common binary names via well-known paths
+    const linuxPaths = [
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/chromium',
+      '/snap/bin/chromium',
+    ];
+    candidates.push(...linuxPaths);
+  }
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/**
  * Resolve Chrome executable path for Puppeteer.
- * Async version that checks all locations.
  *
  * Priority:
  *   1. PUPPETEER_EXECUTABLE_PATH env var
  *   2. Bundled Chrome in app resources/chromium (packaged Electron)
- *   3. Puppeteer's .chromium cache in the project (dev mode)
+ *   3. Dev mode .chromium cache
  *   4. Puppeteer's default cache (~/.cache/puppeteer)
- *   5. Let Puppeteer resolve it (return undefined)
+ *   5. System-installed Chrome (Program Files, /Applications, /usr/bin)
+ *   6. Auto-download via @puppeteer/browsers
  */
 async function ensureChrome({ onProgress } = {}) {
   // 1. Env var override
@@ -98,7 +134,14 @@ async function ensureChrome({ onProgress } = {}) {
     }
   }
 
-  // 5. Auto-download Chrome on first use
+  // 5. System-installed Chrome
+  const systemChrome = findSystemChrome();
+  if (systemChrome) {
+    console.log('[chrome-path] Found system Chrome:', systemChrome);
+    return systemChrome;
+  }
+
+  // 6. Auto-download Chrome on first use
   try {
     if (onProgress) onProgress('Downloading browser engine (first time only)...');
     console.log('[chrome-path] Chrome not found — downloading...');
@@ -123,9 +166,10 @@ async function ensureChrome({ onProgress } = {}) {
     console.error('[chrome-path] Failed to download Chrome:', err.message);
   }
 
-  // 6. Return undefined — nothing worked
-  console.warn('[chrome-path] Chrome not found in any location');
-  return undefined;
+  // 7. Nothing worked — throw a clear error
+  throw new Error(
+    'Chrome not found. Please install Google Chrome from https://www.google.com/chrome/ and restart AutoLander.'
+  );
 }
 
 /**
@@ -146,7 +190,10 @@ function getChromePath() {
   } catch (_) {}
 
   const devChromium = path.join(__dirname, '..', '.chromium');
-  return findChromeIn(devChromium) || undefined;
+  const devFound = findChromeIn(devChromium);
+  if (devFound) return devFound;
+
+  return findSystemChrome() || undefined;
 }
 
 module.exports = { getChromePath, ensureChrome };
