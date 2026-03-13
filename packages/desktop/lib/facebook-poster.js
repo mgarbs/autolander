@@ -1184,6 +1184,7 @@ class FacebookPoster {
     this.log(` Dropdowns present: ${presentDropdowns.join(', ')}`);
 
     // Value mappings (supports US + GB locale variants)
+    const suvValues = ['SUV', 'SUV/Crossover', 'Sport utility vehicle', '4x4', 'Other'];
     const bodyStyleMap = {
       // US options first, then UK/international variants, then 'Other' as last resort
       'sedan': ['Sedan', 'Saloon', 'Other'],
@@ -1191,9 +1192,13 @@ class FacebookPoster {
       'coupe': ['Coupe', 'Coupé', 'Other'],
       'coupé': ['Coupé', 'Coupe', 'Other'],
       'hatchback': ['Hatchback', 'Other'],
-      'suv': ['SUV', 'SUV/Crossover', '4x4', 'Other'],
-      'crossover': ['SUV', 'SUV/Crossover', '4x4', 'Other'],
-      'sport utility': ['SUV', 'SUV/Crossover', '4x4', 'Other'],
+      'suv': suvValues,
+      'crossover': suvValues,
+      'sport utility': suvValues,
+      'sport utility vehicle': suvValues,
+      'sport utility vehicle 4d': suvValues,
+      '4d sport utility': suvValues,
+      '2d sport utility': suvValues,
       'convertible': ['Convertible', 'Other'],
       'wagon': ['Wagon', 'Station Wagon', 'Estate', 'Other'],
       'station wagon': ['Wagon', 'Station Wagon', 'Estate', 'Other'],
@@ -1206,6 +1211,9 @@ class FacebookPoster {
       'pickup': ['Truck', 'Pickup Truck', 'Pickup', 'Other'],
       'pickup truck': ['Truck', 'Pickup Truck', 'Pickup', 'Other'],
       'truck': ['Truck', 'Pickup Truck', 'Other'],
+      'crew cab': ['Truck', 'Pickup Truck', 'Other'],
+      'extended cab': ['Truck', 'Pickup Truck', 'Other'],
+      'regular cab': ['Truck', 'Pickup Truck', 'Other'],
       'small car': ['Small car', 'Compact', 'Other'],
       'compact': ['Small car', 'Compact', 'Hatchback', 'Other'],
       'subcompact': ['Small car', 'Compact', 'Hatchback', 'Other'],
@@ -1329,14 +1337,16 @@ class FacebookPoster {
       const normBody = normalizeUiText(rawBody);
       let bodyVal = bodyStyleMap[normBody] || [rawBody];
       if (!bodyStyleMap[normBody]) {
-        if (normBody.includes('suv') || normBody.includes('crossover') || normBody.includes('sport utility')) {
-          bodyVal = ['SUV', 'SUV/Crossover', '4x4', 'Other'];
+        if (normBody.includes('suv') || normBody.includes('crossover') || normBody.includes('sport utility') || normBody.includes('utility')) {
+          bodyVal = suvValues;
         }
-        else if (normBody.includes('pickup') || normBody.includes('truck')) bodyVal = ['Truck', 'Pickup Truck', 'Other'];
+        else if (normBody.includes('pickup') || normBody.includes('truck') || normBody.includes('crew cab') || normBody.includes('extended cab')) bodyVal = ['Truck', 'Pickup Truck', 'Other'];
         else if (normBody.includes('wagon')) bodyVal = ['Wagon', 'Station Wagon', 'Estate', 'Other'];
         else if (normBody.includes('sedan') || normBody.includes('saloon')) bodyVal = ['Sedan', 'Saloon', 'Other'];
         else if (normBody.includes('coupe') || normBody.includes('coupé')) bodyVal = ['Coupe', 'Coupé', 'Other'];
         else if (normBody.includes('van')) bodyVal = ['Minivan', 'Van', 'Other'];
+        else if (normBody.includes('hatch')) bodyVal = ['Hatchback', 'Other'];
+        else if (normBody.includes('convert')) bodyVal = ['Convertible', 'Other'];
       }
       if (await this.selectDropdown(['Body style', 'Body type'], bodyVal)) {
         fieldsFound++;

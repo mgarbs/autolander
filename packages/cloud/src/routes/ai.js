@@ -120,13 +120,14 @@ module.exports = function createAiRouter(prisma) {
 - Add "Financing available. Trade-ins welcome." at the end
 - Include the VIN if available
 - Keep it 5-8 lines max. No hashtags. No emojis. No price (it goes in a separate field).
+- Do NOT use any markdown formatting. No # headers, no ** bold **, no bullet points. Write plain text only.
 
 Vehicle details:
 ${vehicleInfo}`,
         }],
       });
 
-      const desc = response.content[0].text.trim();
+      const desc = response.content[0].text.trim().replace(/^#+\s*/gm, '');
       res.json({ description: desc || null });
     } catch (error) {
       console.error('[ai] generate-fb-description error:', error.message);
