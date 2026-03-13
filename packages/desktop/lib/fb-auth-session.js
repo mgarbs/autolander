@@ -80,7 +80,7 @@ class FbAuthSession {
     }
 
     const { ensureChrome } = require('./chrome-path');
-    const executablePath = await ensureChrome();
+    const executablePath = await ensureChrome({ onProgress: (msg) => console.log('[fb-auth]', msg) });
 
     this.browser = await puppeteer.launch({
       headless: true,

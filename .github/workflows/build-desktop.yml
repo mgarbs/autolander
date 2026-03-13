@@ -26,7 +26,7 @@ jobs:
             artifact: "*.AppImage"
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
@@ -36,13 +36,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-
-      - name: Cache Chrome for Puppeteer
-        id: chrome-cache
-        uses: actions/cache@v4
-        with:
-          path: packages/desktop/.chromium
-          key: chrome-${{ runner.os }}-stable-v1
 
       - name: Install desktop dependencies (non-workspace)
         shell: bash
@@ -58,34 +51,6 @@ jobs:
           # Copy shared package into desktop node_modules
           mkdir -p packages/desktop/node_modules/@autolander
           cp -r packages/shared packages/desktop/node_modules/@autolander/shared
-
-      - name: Download Chrome for Puppeteer
-        if: steps.chrome-cache.outputs.cache-hit != 'true'
-        shell: bash
-        timeout-minutes: 5
-        working-directory: packages/desktop
-        run: |
-          node -e "
-            const {install, Browser, detectBrowserPlatform} = require('@puppeteer/browsers');
-            const path = require('path');
-            const cacheDir = path.join(process.cwd(), '.chromium');
-            (async () => {
-              const result = await install({
-                browser: Browser.CHROME,
-                buildId: 'stable',
-                cacheDir,
-                platform: detectBrowserPlatform(),
-              });
-              console.log('Chrome installed to:', result.executablePath);
-            })().catch(e => { console.error(e); process.exit(1); });
-          "
-
-      - name: Verify Chrome
-        shell: bash
-        working-directory: packages/desktop
-        run: |
-          echo "Chrome binary:"
-          find .chromium -name "chrome" -o -name "chrome.exe" 2>/dev/null || echo "WARNING: chrome not found"
 
       - name: Build renderer
         working-directory: packages/desktop

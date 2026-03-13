@@ -204,7 +204,7 @@ class InboxMonitor {
     }
 
     const { ensureChrome } = require('./chrome-path');
-    const executablePath = await ensureChrome();
+    const executablePath = await ensureChrome({ onProgress: (msg) => console.log('[inbox]', msg) });
 
     this.browser = await puppeteer.launch({
       headless: this.headless ? 'new' : false,

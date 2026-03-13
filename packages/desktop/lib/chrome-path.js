@@ -56,7 +56,7 @@ function findChromeIn(dir, maxDepth = 5, depth = 0) {
  *   4. Puppeteer's default cache (~/.cache/puppeteer)
  *   5. Let Puppeteer resolve it (return undefined)
  */
-async function ensureChrome() {
+async function ensureChrome({ onProgress } = {}) {
   // 1. Env var override
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
     return process.env.PUPPETEER_EXECUTABLE_PATH;
@@ -98,7 +98,32 @@ async function ensureChrome() {
     }
   }
 
-  // 5. Return undefined — let Puppeteer try its own resolution
+  // 5. Auto-download Chrome on first use
+  try {
+    if (onProgress) onProgress('Downloading browser engine (first time only)...');
+    console.log('[chrome-path] Chrome not found — downloading...');
+
+    const { install, Browser, detectBrowserPlatform } = require('@puppeteer/browsers');
+
+    const cacheDir = process.platform === 'win32'
+      ? path.join(process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Local'), 'puppeteer')
+      : path.join(process.env.HOME || '', '.cache', 'puppeteer');
+
+    const result = await install({
+      browser: Browser.CHROME,
+      buildId: 'stable',
+      cacheDir,
+      platform: detectBrowserPlatform(),
+    });
+
+    console.log('[chrome-path] Chrome downloaded to:', result.executablePath);
+    if (onProgress) onProgress('Browser engine ready.');
+    return result.executablePath;
+  } catch (err) {
+    console.error('[chrome-path] Failed to download Chrome:', err.message);
+  }
+
+  // 6. Return undefined — nothing worked
   console.warn('[chrome-path] Chrome not found in any location');
   return undefined;
 }

@@ -321,7 +321,7 @@ class FacebookPoster {
     }
 
     const { ensureChrome } = require('./chrome-path');
-    const executablePath = await ensureChrome();
+    const executablePath = await ensureChrome({ onProgress: (msg) => this.log(msg) });
     this.log(`Launch config: headless=${this.headless} executablePath=${executablePath || 'bundled'}`);
 
     this.browser = await puppeteer.launch({
