@@ -41,7 +41,12 @@ function getIpcFbPosterAdapter() {
       dataDir: DATA_DIR,
       salespersonId: 'default',
       mainWindow: getMainWindow(),
+      apiUrl: agentCredentials.serverUrl,
+      authToken: agentCredentials.accessToken,
     });
+  }
+  if (typeof ipcFbPosterAdapter.setApiCredentials === 'function') {
+    ipcFbPosterAdapter.setApiCredentials(agentCredentials.serverUrl, agentCredentials.accessToken);
   }
   ipcFbPosterAdapter.setMainWindow(getMainWindow());
   return ipcFbPosterAdapter;
@@ -79,6 +84,10 @@ function sendAgentStatus(status) {
 }
 
 function ensureAgentInfrastructure() {
+  if (fbPosterAdapter && typeof fbPosterAdapter.setApiCredentials === 'function') {
+    fbPosterAdapter.setApiCredentials(agentCredentials.serverUrl, agentCredentials.accessToken);
+  }
+
   if (!agentClient) {
     const { AgentClient } = require('../worker/agent-client');
     agentClient = new AgentClient({ dataDir: DATA_DIR });
@@ -91,7 +100,15 @@ function ensureAgentInfrastructure() {
     const { FbInboxAdapter } = require('./adapters/fb-inbox-adapter');
     const { FbAuthAdapter } = require('./adapters/fb-auth-adapter');
 
-    fbPosterAdapter = fbPosterAdapter || new FbPosterAdapter({ dataDir: DATA_DIR, mainWindow: getMainWindow() });
+    fbPosterAdapter = fbPosterAdapter || new FbPosterAdapter({
+      dataDir: DATA_DIR,
+      mainWindow: getMainWindow(),
+      apiUrl: agentCredentials.serverUrl,
+      authToken: agentCredentials.accessToken,
+    });
+    if (typeof fbPosterAdapter.setApiCredentials === 'function') {
+      fbPosterAdapter.setApiCredentials(agentCredentials.serverUrl, agentCredentials.accessToken);
+    }
     fbInboxAdapter = fbInboxAdapter || new FbInboxAdapter({ dataDir: DATA_DIR, mainWindow: getMainWindow() });
     fbAuthAdapter = fbAuthAdapter || new FbAuthAdapter({ dataDir: DATA_DIR, mainWindow: getMainWindow() });
     commandRouter = new CommandRouter({
@@ -112,10 +129,16 @@ function registerIpcHandlers(ipcMain) {
   // --- Agent connection ---
   ipcMain.handle('agent:login', async (_event, { serverUrl, accessToken }) => {
     console.log('[ipc] agent:login called, serverUrl:', serverUrl);
-    ensureAgentInfrastructure();
     const nextServerUrl = serverUrl || agentCredentials.serverUrl;
     const nextAccessToken = accessToken || agentCredentials.accessToken;
     agentCredentials = { serverUrl: nextServerUrl, accessToken: nextAccessToken };
+    ensureAgentInfrastructure();
+    if (ipcFbPosterAdapter && typeof ipcFbPosterAdapter.setApiCredentials === 'function') {
+      ipcFbPosterAdapter.setApiCredentials(nextServerUrl, nextAccessToken);
+    }
+    if (fbPosterAdapter && typeof fbPosterAdapter.setApiCredentials === 'function') {
+      fbPosterAdapter.setApiCredentials(nextServerUrl, nextAccessToken);
+    }
     try {
       await agentClient.connect(nextServerUrl, nextAccessToken);
     } catch (err) {
@@ -148,6 +171,12 @@ function registerIpcHandlers(ipcMain) {
       updateAgentFbSessionStatus(false);
     }
     agentCredentials = { serverUrl: '', accessToken: '' };
+    if (ipcFbPosterAdapter && typeof ipcFbPosterAdapter.setApiCredentials === 'function') {
+      ipcFbPosterAdapter.setApiCredentials('', '');
+    }
+    if (fbPosterAdapter && typeof fbPosterAdapter.setApiCredentials === 'function') {
+      fbPosterAdapter.setApiCredentials('', '');
+    }
     if (inboxPolling) {
       inboxPolling.stop();
     }

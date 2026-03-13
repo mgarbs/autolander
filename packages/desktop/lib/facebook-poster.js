@@ -36,7 +36,6 @@ const { addExtra } = require('puppeteer-extra');
 const puppeteerCore = require('puppeteer-core');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const puppeteer = addExtra(puppeteerCore);
-const Anthropic = require('@anthropic-ai/sdk');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -160,6 +159,9 @@ class FacebookPoster {
     this.isConnected = false;
     this.debugPort = options.debugPort || process.env.CHROME_DEBUG_PORT || 9222;
     this.sessionFile = path.join(SESSIONS_DIR, `${this.salespersonId || 'default'}_fb_session.json`);
+    this.apiUrl = '';
+    this.authToken = '';
+    this.setCloudCredentials(options.apiUrl, options.authToken);
 
     // Rate limiting
     this.postsToday = 0;
@@ -173,6 +175,11 @@ class FacebookPoster {
   log(...args)  { logInfo(this.sid, ...args); }
   warn(...args) { logWarn(this.sid, ...args); }
   err(...args)  { logError(this.sid, ...args); }
+
+  setCloudCredentials(apiUrl, authToken) {
+    this.apiUrl = typeof apiUrl === 'string' ? apiUrl.trim().replace(/\/+$/, '') : '';
+    this.authToken = typeof authToken === 'string' ? authToken.trim() : '';
+  }
 
   /**
    * Fetch the WebSocket debugger URL from a running Chrome instance.
@@ -194,6 +201,63 @@ class FacebookPoster {
       });
       req.on('error', () => resolve(null));
       req.on('timeout', () => { req.destroy(); resolve(null); });
+    });
+  }
+
+  async _cloudPost(routePath, body) {
+    if (!this.apiUrl || !this.authToken) {
+      return null;
+    }
+
+    let url;
+    try {
+      url = new URL(routePath, this.apiUrl);
+    } catch (error) {
+      this.log(` Invalid cloud API URL "${this.apiUrl}": ${error.message}`);
+      return null;
+    }
+
+    const payload = JSON.stringify(body || {});
+    const transport = url.protocol === 'http:' ? http : https;
+
+    return new Promise((resolve) => {
+      const req = transport.request(url, {
+        method: 'POST',
+        timeout: 10000,
+        headers: {
+          Authorization: `Bearer ${this.authToken}`,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+        },
+      }, (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          if (res.statusCode !== 200) {
+            this.log(` Cloud POST ${url.pathname} failed with HTTP ${res.statusCode}`);
+            return resolve(null);
+          }
+
+          try {
+            resolve(data ? JSON.parse(data) : null);
+          } catch (error) {
+            this.log(` Cloud POST ${url.pathname} returned invalid JSON: ${error.message}`);
+            resolve(null);
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        this.log(` Cloud POST ${url.pathname} failed: ${error.message}`);
+        resolve(null);
+      });
+      req.on('timeout', () => {
+        req.destroy(new Error('Request timed out'));
+      });
+
+      req.write(payload);
+      req.end();
     });
   }
 
@@ -633,7 +697,7 @@ class FacebookPoster {
 
   /**
    * Match a vehicle color string to the closest Facebook Marketplace dropdown option
-   * using a Claude API call.
+   * using the cloud AI API.
    *
    * FB colour options: Black, Blue, Brown, Gold, Green, Grey, Pink, Purple, Red,
    *   Silver, Orange, White, Yellow, Charcoal, Off white, Tan, Beige, Burgundy, Turquoise
@@ -654,7 +718,7 @@ class FacebookPoster {
     const exact = fbColors.find(c => c.toLowerCase() === colorInput.toLowerCase().trim());
     if (exact) return exact;
 
-    // Fast local heuristic mapping (works without API keys)
+    // Fast local heuristic mapping (works without the cloud API)
     const normalized = normalizeUiText(colorInput);
     const colorKeywords = [
       { key: 'off white', value: 'Off white' },
@@ -684,34 +748,20 @@ class FacebookPoster {
       return heuristic.value;
     }
 
-    if (!process.env.ANTHROPIC_API_KEY) {
-      this.log(` Color matching key not configured; defaulting "${colorInput}" to Black`);
-      return 'Black';
+    const response = await this._cloudPost('/api/ai/match-color', {
+      color: colorInput,
+      options: fbColors,
+    });
+    const match = typeof response?.match === 'string' ? response.match.trim() : '';
+    const validated = fbColors.find(c => c.toLowerCase() === match.toLowerCase());
+    if (validated) {
+      this.log(` Color matched: "${colorInput}" -> "${validated}"`);
+      return validated;
     }
 
-    try {
-      const client = new Anthropic();
-      const response = await client.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 20,
-        messages: [{
-          role: 'user',
-          content: `Vehicle color: "${colorInput}"\nFacebook options: ${fbColors.join(', ')}\n\nWhich single Facebook color option is the closest match? Reply with ONLY the color name, nothing else.`
-        }]
-      });
-      const match = response.content[0].text.trim();
-      // Validate the response is actually one of the FB options
-      const validated = fbColors.find(c => c.toLowerCase() === match.toLowerCase());
-      if (validated) {
-        this.log(` Color matched: "${colorInput}" → "${validated}"`);
-        return validated;
-      }
-      this.log(` Claude returned unexpected color "${match}", falling back to Black`);
-      return 'Black';
-    } catch (e) {
-      this.log(` Color matching API call failed: ${e.message}, falling back to Black`);
-      return 'Black';
-    }
+    this.log(` Cloud color match unavailable for "${colorInput}", defaulting to Black`);
+    return 'Black';
+
   }
 
   /**
@@ -1063,58 +1113,37 @@ class FacebookPoster {
   }
 
   /**
-   * Generate a compelling FB Marketplace description using Claude AI.
+   * Generate a compelling FB Marketplace description through the cloud AI API.
    */
   async generateDescription(vehicle) {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      this.log('No ANTHROPIC_API_KEY set, skipping AI description');
+    if (!this.apiUrl || !this.authToken) {
+      this.log('Cloud AI credentials not configured, skipping AI description');
       return null;
     }
 
-    try {
-      const client = new Anthropic();
-      const vehicleInfo = [
-        vehicle.year && `Year: ${vehicle.year}`,
-        vehicle.make && `Make: ${vehicle.make}`,
-        vehicle.model && `Model: ${vehicle.model}`,
-        vehicle.trim && `Trim: ${vehicle.trim}`,
-        vehicle.price && `Price: $${Number(vehicle.price).toLocaleString()}`,
-        vehicle.mileage && `Mileage: ${Number(vehicle.mileage).toLocaleString()} miles`,
-        vehicle.color && `Color: ${vehicle.color}`,
-        vehicle.bodyStyle && `Body Style: ${vehicle.bodyStyle}`,
-        vehicle.transmission && `Transmission: ${vehicle.transmission}`,
-        vehicle.fuelType && `Fuel Type: ${vehicle.fuelType}`,
-        vehicle.vin && `VIN: ${vehicle.vin}`,
-      ].filter(Boolean).join('\n');
-
-      const response = await client.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 500,
-        messages: [{
-          role: 'user',
-          content: `Write a Facebook Marketplace vehicle listing description that will SELL this car fast. Use proven techniques that work on FB Marketplace:
-
-- Start with an attention-grabbing opening line (e.g. "Don't miss this one!" or "Priced to move!")
-- Highlight the top 3-4 selling points (low miles, clean title, one owner, great condition, fuel economy, etc.)
-- Use short punchy sentences - FB buyers scan quickly
-- Include a sense of urgency (e.g. "Won't last at this price")
-- End with a clear call to action (e.g. "Message me today for a test drive!")
-- Add "Financing available. Trade-ins welcome." at the end
-- Include the VIN if available
-- Keep it 5-8 lines max. No hashtags. No emojis. No price (it goes in a separate field).
-
-Vehicle details:
-${vehicleInfo}`
-        }]
-      });
-
-      const desc = response.content[0].text.trim();
-      this.log(` AI description generated (${desc.length} chars)`);
-      return desc;
-    } catch (e) {
-      this.log(` AI description generation failed: ${e.message}`);
+    const response = await this._cloudPost('/api/ai/generate-fb-description', {
+      vehicle: {
+        year: vehicle.year,
+        make: vehicle.make,
+        model: vehicle.model,
+        trim: vehicle.trim,
+        price: vehicle.price,
+        mileage: vehicle.mileage,
+        color: vehicle.color || vehicle.exteriorColor || vehicle.exterior_color,
+        bodyStyle: vehicle.bodyStyle || vehicle.body_style,
+        transmission: vehicle.transmission,
+        fuelType: vehicle.fuelType || vehicle.fuel_type,
+        vin: vehicle.vin,
+      },
+    });
+    const desc = typeof response?.description === 'string' ? response.description.trim() : '';
+    if (!desc) {
+      this.log(' AI description generation failed via cloud API');
       return null;
     }
+
+    this.log(` AI description generated (${desc.length} chars)`);
+    return desc;
   }
 
   /**

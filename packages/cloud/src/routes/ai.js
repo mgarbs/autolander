@@ -49,6 +49,91 @@ module.exports = function createAiRouter(prisma) {
     }
   });
 
+  // Match a vehicle color to the closest Facebook Marketplace dropdown option
+  router.post('/match-color', async (req, res) => {
+    try {
+      const { color, options } = req.body;
+      if (!color || !Array.isArray(options) || options.length === 0) {
+        return res.status(400).json({ error: 'color (string) and options (array) are required.' });
+      }
+
+      const Anthropic = require('@anthropic-ai/sdk');
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      if (!apiKey) return res.json({ match: null });
+
+      const client = new Anthropic({ apiKey });
+      const response = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 20,
+        messages: [{
+          role: 'user',
+          content: `Vehicle color: "${color}"\nFacebook options: ${options.join(', ')}\n\nWhich single Facebook color option is the closest match? Reply with ONLY the color name, nothing else.`,
+        }],
+      });
+
+      const match = response.content[0].text.trim();
+      const validated = options.find(o => o.toLowerCase() === match.toLowerCase());
+      res.json({ match: validated || null });
+    } catch (error) {
+      console.error('[ai] match-color error:', error.message);
+      res.json({ match: null });
+    }
+  });
+
+  // Generate a Facebook Marketplace listing description from vehicle data
+  router.post('/generate-fb-description', async (req, res) => {
+    try {
+      const { vehicle } = req.body;
+      if (!vehicle) return res.status(400).json({ error: 'vehicle object is required.' });
+
+      const Anthropic = require('@anthropic-ai/sdk');
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      if (!apiKey) return res.json({ description: null });
+
+      const vehicleInfo = [
+        vehicle.year && `Year: ${vehicle.year}`,
+        vehicle.make && `Make: ${vehicle.make}`,
+        vehicle.model && `Model: ${vehicle.model}`,
+        vehicle.trim && `Trim: ${vehicle.trim}`,
+        vehicle.price && `Price: $${Number(vehicle.price).toLocaleString()}`,
+        vehicle.mileage && `Mileage: ${Number(vehicle.mileage).toLocaleString()} miles`,
+        vehicle.color && `Color: ${vehicle.color}`,
+        vehicle.bodyStyle && `Body Style: ${vehicle.bodyStyle}`,
+        vehicle.transmission && `Transmission: ${vehicle.transmission}`,
+        vehicle.fuelType && `Fuel Type: ${vehicle.fuelType}`,
+        vehicle.vin && `VIN: ${vehicle.vin}`,
+      ].filter(Boolean).join('\n');
+
+      const client = new Anthropic({ apiKey });
+      const response = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 500,
+        messages: [{
+          role: 'user',
+          content: `Write a Facebook Marketplace vehicle listing description that will SELL this car fast. Use proven techniques that work on FB Marketplace:
+
+- Start with an attention-grabbing opening line (e.g. "Don't miss this one!" or "Priced to move!")
+- Highlight the top 3-4 selling points (low miles, clean title, one owner, great condition, fuel economy, etc.)
+- Use short punchy sentences - FB buyers scan quickly
+- Include a sense of urgency (e.g. "Won't last at this price")
+- End with a clear call to action (e.g. "Message me today for a test drive!")
+- Add "Financing available. Trade-ins welcome." at the end
+- Include the VIN if available
+- Keep it 5-8 lines max. No hashtags. No emojis. No price (it goes in a separate field).
+
+Vehicle details:
+${vehicleInfo}`,
+        }],
+      });
+
+      const desc = response.content[0].text.trim();
+      res.json({ description: desc || null });
+    } catch (error) {
+      console.error('[ai] generate-fb-description error:', error.message);
+      res.json({ description: null });
+    }
+  });
+
   // Score a lead
   router.post('/score-lead', async (req, res) => {
     const { conversationId } = req.body;

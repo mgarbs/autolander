@@ -31,6 +31,8 @@ class AssistedPostSession {
   constructor(options = {}) {
     this.salespersonId = options.salespersonId || 'default';
     this.vehicle = options.vehicle;
+    this.apiUrl = options.apiUrl || '';
+    this.authToken = options.authToken || '';
 
     this.poster = null;
     this.cdpSession = null;
@@ -62,6 +64,8 @@ class AssistedPostSession {
 
       this.poster = new FacebookPoster({
         salespersonId: this.salespersonId,
+        apiUrl: this.apiUrl,
+        authToken: this.authToken,
       });
       await this.poster.init();
 

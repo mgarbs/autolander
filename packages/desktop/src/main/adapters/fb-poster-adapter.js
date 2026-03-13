@@ -1,16 +1,26 @@
 'use strict';
 
 class FbPosterAdapter {
-  constructor({ dataDir, salespersonId = 'default', mainWindow = null } = {}) {
+  constructor({ dataDir, salespersonId = 'default', mainWindow = null, apiUrl = '', authToken = '' } = {}) {
     this.dataDir = dataDir;
     this.salespersonId = salespersonId;
     this.mainWindow = mainWindow;
+    this.apiUrl = apiUrl;
+    this.authToken = authToken;
     this.poster = null;
     this.assistedSession = null;
   }
 
   setMainWindow(mainWindow) {
     this.mainWindow = mainWindow;
+  }
+
+  setApiCredentials(apiUrl = '', authToken = '') {
+    this.apiUrl = apiUrl;
+    this.authToken = authToken;
+    if (this.poster && typeof this.poster.setCloudCredentials === 'function') {
+      this.poster.setCloudCredentials(apiUrl, authToken);
+    }
   }
 
   _send(channel, payload) {
@@ -22,7 +32,11 @@ class FbPosterAdapter {
   async _getPoster() {
     if (this.poster) return this.poster;
     const { FacebookPoster } = require('../../../lib/facebook-poster');
-    this.poster = new FacebookPoster({ salespersonId: this.salespersonId });
+    this.poster = new FacebookPoster({
+      salespersonId: this.salespersonId,
+      apiUrl: this.apiUrl,
+      authToken: this.authToken,
+    });
     await this.poster.init();
     return this.poster;
   }
@@ -63,6 +77,8 @@ class FbPosterAdapter {
     const session = new AssistedPostSession({
       salespersonId: this.salespersonId,
       vehicle: vehicleData,
+      apiUrl: this.apiUrl,
+      authToken: this.authToken,
     });
 
     session.onFrame = (frameData) => this._send('fb:frame', { data: frameData });
