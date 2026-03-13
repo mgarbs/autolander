@@ -49,8 +49,10 @@ const {
   ensureDirs
 } = require('./paths');
 
-// Add stealth plugin to avoid detection
-puppeteer.use(StealthPlugin());
+// Add stealth plugin to avoid detection (guard against double-registration)
+if (!(puppeteer.plugins || []).some(p => (p.name || p._pluginName) === 'stealth')) {
+  puppeteer.use(StealthPlugin());
+}
 
 const PHOTOS_DIR = path.join(DATA_DIR, 'photos');
 const LOG_DIR = LOGS_DIR;

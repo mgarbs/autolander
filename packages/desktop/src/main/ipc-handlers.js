@@ -176,7 +176,17 @@ function registerIpcHandlers(ipcMain) {
       // The promise resolves when session ends (success or timeout).
       adapter.startLogin()
         .then((result) => updateAgentFbSessionStatus(!!result?.connected || !!result?.valid))
-        .catch((err) => console.error('[ipc] fb:login session error:', err.message));
+        .catch((err) => {
+          console.error('[ipc] fb:login session error:', err.message);
+          const win = getMainWindow();
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('fb:progress', {
+              stage: 'error',
+              status: 'error',
+              message: err.message || 'Failed to start Facebook session',
+            });
+          }
+        });
       return { started: true };
     } catch (error) {
       return asErrorResult(error);

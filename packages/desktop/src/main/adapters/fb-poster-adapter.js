@@ -80,6 +80,12 @@ class FbPosterAdapter {
     // can switch to the streaming view while the session runs in background.
     session.start().catch((err) => {
       console.error('[fb-poster-adapter] session.start() error:', err.message);
+      // Send error to renderer so user sees it instead of a black screen
+      this._send('fb:progress', {
+        stage: 'error',
+        message: err.message || 'Failed to start posting session',
+        percent: 100,
+      });
     });
     return { started: true };
   }
