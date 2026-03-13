@@ -13,18 +13,17 @@
  *   5. Browser is destroyed; WebSocket is closed by the server
  */
 
-const puppeteer = require('puppeteer-extra');
+const { addExtra } = require('puppeteer-extra');
+const puppeteerCore = require('puppeteer-core');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const puppeteer = addExtra(puppeteerCore);
 const fs = require('fs');
 const path = require('path');
 const { encryptCookies } = require('./fb-crypto');
 const { SESSIONS_DIR, ensureDirs } = require('./paths');
 
-// Register stealth plugin — puppeteer-extra is a singleton so guard against
-// double registration if facebook-poster.js already called use() in this process.
-if (!(puppeteer.plugins || []).some(p => (p.name || p._pluginName) === 'stealth')) {
-  puppeteer.use(StealthPlugin());
-}
+// Register stealth plugin
+puppeteer.use(StealthPlugin());
 
 const VIEWPORT = { width: 1366, height: 768 };
 const SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes

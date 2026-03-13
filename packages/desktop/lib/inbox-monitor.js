@@ -8,13 +8,16 @@
  * humanDelay() patterns from facebook-poster.js.
  */
 
-const puppeteer = require('puppeteer-extra');
+const { addExtra } = require('puppeteer-extra');
+const puppeteerCore = require('puppeteer-core');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const puppeteer = addExtra(puppeteerCore);
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { SESSIONS_DIR, SCREENSHOTS_DIR, ensureDirs } = require('./paths');
 
+// Register stealth plugin
 puppeteer.use(StealthPlugin());
 
 ensureDirs();
