@@ -1183,13 +1183,15 @@ class FacebookPoster {
     });
     this.log(` Dropdowns present: ${presentDropdowns.join(', ')}`);
 
-    // Value mappings (supports US + GB locale variants)
-    const suvValues = ['SUV', 'SUV/Crossover', 'Sport utility vehicle', '4x4', 'Other'];
+    // Value mappings — GB locale options first (Coupé, Van, Saloon, Hatchback,
+    // 4x4, Convertible, Estate, MPV/People carrier, Small car, Other),
+    // then US variants as fallback
+    const suvValues = ['4x4', 'SUV', 'SUV/Crossover', 'Other'];
+    const truckValues = ['4x4', 'Van', 'Truck', 'Pickup Truck', 'Other'];
     const bodyStyleMap = {
-      // US options first, then UK/international variants, then 'Other' as last resort
-      'sedan': ['Sedan', 'Saloon', 'Other'],
+      'sedan': ['Saloon', 'Sedan', 'Other'],
       'saloon': ['Saloon', 'Sedan', 'Other'],
-      'coupe': ['Coupe', 'Coupé', 'Other'],
+      'coupe': ['Coupé', 'Coupe', 'Other'],
       'coupé': ['Coupé', 'Coupe', 'Other'],
       'hatchback': ['Hatchback', 'Other'],
       'suv': suvValues,
@@ -1200,23 +1202,23 @@ class FacebookPoster {
       '4d sport utility': suvValues,
       '2d sport utility': suvValues,
       'convertible': ['Convertible', 'Other'],
-      'wagon': ['Wagon', 'Station Wagon', 'Estate', 'Other'],
-      'station wagon': ['Wagon', 'Station Wagon', 'Estate', 'Other'],
+      'wagon': ['Estate', 'Wagon', 'Station Wagon', 'Other'],
+      'station wagon': ['Estate', 'Wagon', 'Station Wagon', 'Other'],
       'estate': ['Estate', 'Wagon', 'Station Wagon', 'Other'],
       'van': ['Van', 'Other'],
-      'minivan': ['Minivan', 'Mini Van', 'MPV/People carrier', 'Other'],
-      'mini van': ['Minivan', 'Mini Van', 'MPV/People carrier', 'Other'],
+      'minivan': ['MPV/People carrier', 'Minivan', 'Van', 'Other'],
+      'mini van': ['MPV/People carrier', 'Minivan', 'Van', 'Other'],
       'mpv': ['MPV/People carrier', 'Minivan', 'Other'],
       'people carrier': ['MPV/People carrier', 'Minivan', 'Other'],
-      'pickup': ['Truck', 'Pickup Truck', 'Pickup', 'Other'],
-      'pickup truck': ['Truck', 'Pickup Truck', 'Pickup', 'Other'],
-      'truck': ['Truck', 'Pickup Truck', 'Other'],
-      'crew cab': ['Truck', 'Pickup Truck', 'Other'],
-      'extended cab': ['Truck', 'Pickup Truck', 'Other'],
-      'regular cab': ['Truck', 'Pickup Truck', 'Other'],
-      'small car': ['Small car', 'Compact', 'Other'],
-      'compact': ['Small car', 'Compact', 'Hatchback', 'Other'],
-      'subcompact': ['Small car', 'Compact', 'Hatchback', 'Other'],
+      'pickup': truckValues,
+      'pickup truck': truckValues,
+      'truck': truckValues,
+      'crew cab': truckValues,
+      'extended cab': truckValues,
+      'regular cab': truckValues,
+      'small car': ['Small car', 'Hatchback', 'Other'],
+      'compact': ['Small car', 'Hatchback', 'Other'],
+      'subcompact': ['Small car', 'Hatchback', 'Other'],
       '4x4': ['4x4', 'SUV', 'Other'],
       'other': ['Other'],
     };
@@ -1340,11 +1342,11 @@ class FacebookPoster {
         if (normBody.includes('suv') || normBody.includes('crossover') || normBody.includes('sport utility') || normBody.includes('utility')) {
           bodyVal = suvValues;
         }
-        else if (normBody.includes('pickup') || normBody.includes('truck') || normBody.includes('crew cab') || normBody.includes('extended cab')) bodyVal = ['Truck', 'Pickup Truck', 'Other'];
-        else if (normBody.includes('wagon')) bodyVal = ['Wagon', 'Station Wagon', 'Estate', 'Other'];
-        else if (normBody.includes('sedan') || normBody.includes('saloon')) bodyVal = ['Sedan', 'Saloon', 'Other'];
-        else if (normBody.includes('coupe') || normBody.includes('coupé')) bodyVal = ['Coupe', 'Coupé', 'Other'];
-        else if (normBody.includes('van')) bodyVal = ['Minivan', 'Van', 'Other'];
+        else if (normBody.includes('pickup') || normBody.includes('truck') || normBody.includes('crew cab') || normBody.includes('extended cab')) bodyVal = truckValues;
+        else if (normBody.includes('wagon')) bodyVal = ['Estate', 'Wagon', 'Other'];
+        else if (normBody.includes('sedan') || normBody.includes('saloon')) bodyVal = ['Saloon', 'Sedan', 'Other'];
+        else if (normBody.includes('coupe') || normBody.includes('coupé')) bodyVal = ['Coupé', 'Coupe', 'Other'];
+        else if (normBody.includes('van')) bodyVal = ['Van', 'MPV/People carrier', 'Other'];
         else if (normBody.includes('hatch')) bodyVal = ['Hatchback', 'Other'];
         else if (normBody.includes('convert')) bodyVal = ['Convertible', 'Other'];
       }
