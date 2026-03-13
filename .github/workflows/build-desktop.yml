@@ -56,7 +56,7 @@ jobs:
         shell: bash
         working-directory: packages/desktop
         run: |
-          npx @puppeteer/browsers install chrome@stable --path .chromium
+          npx @puppeteer/browsers install chrome@stable --path "$(pwd)/.chromium"
           echo "Chrome installed to .chromium:"
           find .chromium -name "chrome" -o -name "chrome.exe" 2>/dev/null || true
 
