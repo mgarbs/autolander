@@ -20,7 +20,7 @@ const puppeteer = addExtra(puppeteerCore);
 const fs = require('fs');
 const path = require('path');
 const { encryptCookies } = require('./fb-crypto');
-const { SESSIONS_DIR, ensureDirs } = require('./paths');
+const { SESSIONS_DIR, CHROME_PROFILE_DIR, ensureDirs } = require('./paths');
 
 // Register stealth plugin
 puppeteer.use(StealthPlugin());
@@ -86,6 +86,7 @@ class FbAuthSession {
       headless: true,
       args: launchArgs,
       executablePath,
+      userDataDir: CHROME_PROFILE_DIR,
       defaultViewport: VIEWPORT,
     });
 

@@ -7,9 +7,10 @@ const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 const SCREENSHOTS_DIR = path.join(DATA_DIR, 'screenshots');
 const LOGS_DIR = path.join(DATA_DIR, 'logs');
 const TEMP_DIR = path.join(DATA_DIR, 'temp');
+const CHROME_PROFILE_DIR = path.join(DATA_DIR, 'chrome-profile');
 
 function ensureDirs() {
-  [DATA_DIR, SESSIONS_DIR, SCREENSHOTS_DIR, LOGS_DIR, TEMP_DIR].forEach((dir) => {
+  [DATA_DIR, SESSIONS_DIR, SCREENSHOTS_DIR, LOGS_DIR, TEMP_DIR, CHROME_PROFILE_DIR].forEach((dir) => {
     fs.mkdirSync(dir, { recursive: true });
   });
 }
@@ -20,5 +21,6 @@ module.exports = {
   SCREENSHOTS_DIR,
   LOGS_DIR,
   TEMP_DIR,
+  CHROME_PROFILE_DIR,
   ensureDirs,
 };

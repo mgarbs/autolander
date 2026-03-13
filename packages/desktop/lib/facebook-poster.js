@@ -47,6 +47,7 @@ const {
   SCREENSHOTS_DIR,
   LOGS_DIR,
   TEMP_DIR,
+  CHROME_PROFILE_DIR,
   ensureDirs
 } = require('./paths');
 
@@ -328,6 +329,7 @@ class FacebookPoster {
       headless: this.headless ? 'new' : false,
       slowMo: this.slowMo,
       executablePath,
+      userDataDir: CHROME_PROFILE_DIR,
       args: launchArgs,
       defaultViewport: {
         width: 1366,

@@ -15,7 +15,7 @@ const puppeteer = addExtra(puppeteerCore);
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { SESSIONS_DIR, SCREENSHOTS_DIR, ensureDirs } = require('./paths');
+const { SESSIONS_DIR, SCREENSHOTS_DIR, CHROME_PROFILE_DIR, ensureDirs } = require('./paths');
 
 // Register stealth plugin
 puppeteer.use(StealthPlugin());
@@ -210,6 +210,7 @@ class InboxMonitor {
       headless: this.headless ? 'new' : false,
       slowMo: this.slowMo,
       executablePath,
+      userDataDir: CHROME_PROFILE_DIR,
       args: launchArgs,
       defaultViewport: { width: 1366, height: 768 }
     });
