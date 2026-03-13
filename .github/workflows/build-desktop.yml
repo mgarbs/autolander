@@ -8,6 +8,7 @@ on:
 
 env:
   VITE_API_URL: ${{ secrets.VITE_API_URL }}
+  PUPPETEER_SKIP_DOWNLOAD: "true"
 
 jobs:
   build:
@@ -40,7 +41,6 @@ jobs:
         shell: bash
         run: |
           # Hide root package.json so npm doesn't detect workspaces
-          # This ensures all deps install into packages/desktop/node_modules
           mv package.json package.json.bak
           mv package-lock.json package-lock.json.bak 2>/dev/null || true
           cd packages/desktop
@@ -51,6 +51,14 @@ jobs:
           # Copy shared package into desktop node_modules
           mkdir -p packages/desktop/node_modules/@autolander
           cp -r packages/shared packages/desktop/node_modules/@autolander/shared
+
+      - name: Download Chrome for Puppeteer
+        shell: bash
+        working-directory: packages/desktop
+        run: |
+          npx @puppeteer/browsers install chrome@stable --path .chromium
+          echo "Chrome installed to .chromium:"
+          find .chromium -name "chrome" -o -name "chrome.exe" 2>/dev/null || true
 
       - name: Build renderer
         working-directory: packages/desktop
