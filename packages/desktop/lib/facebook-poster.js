@@ -254,8 +254,8 @@ class FacebookPoster {
       console.log('[poster] Using residential proxy:', process.env.PROXY_URL);
     }
 
-    const { getChromePath } = require('./chrome-path');
-    const executablePath = getChromePath();
+    const { ensureChrome } = require('./chrome-path');
+    const executablePath = await ensureChrome();
     this.log(`Launch config: headless=${this.headless} executablePath=${executablePath || 'bundled'}`);
 
     this.browser = await puppeteer.launch({

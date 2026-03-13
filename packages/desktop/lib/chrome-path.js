@@ -97,22 +97,42 @@ async function ensureChrome() {
     if (execPath && fs.existsSync(execPath)) return execPath;
   } catch (_) {}
 
-  // 5. Download Chrome via Puppeteer
+  // 5. Download Chrome via Puppeteer's install API
   console.log('[chrome-path] Chrome not found, downloading...');
   fs.mkdirSync(chromeDir, { recursive: true });
   try {
-    const { execSync } = require('child_process');
-    execSync(`npx puppeteer browsers install chrome --path "${chromeDir}"`, {
-      stdio: 'inherit',
-      timeout: 5 * 60 * 1000,
+    // Use @puppeteer/browsers which is bundled with puppeteer
+    const { install, Browser, detectBrowserPlatform } = require('@puppeteer/browsers');
+    const platform = detectBrowserPlatform();
+    const buildId = 'stable';
+    const result = await install({
+      browser: Browser.CHROME,
+      buildId,
+      cacheDir: chromeDir,
+      platform,
     });
+    if (result && result.executablePath && fs.existsSync(result.executablePath)) {
+      console.log('[chrome-path] Chrome downloaded to:', result.executablePath);
+      return result.executablePath;
+    }
+    // Fallback: search the cache dir
     const found = findChromeIn(chromeDir);
     if (found) {
-      console.log('[chrome-path] Chrome downloaded to:', found);
+      console.log('[chrome-path] Chrome found at:', found);
       return found;
     }
   } catch (err) {
     console.error('[chrome-path] Failed to download Chrome:', err.message);
+    // Fallback: try npx in dev mode
+    try {
+      const { execSync } = require('child_process');
+      execSync(`npx puppeteer browsers install chrome --path "${chromeDir}"`, {
+        stdio: 'inherit',
+        timeout: 5 * 60 * 1000,
+      });
+      const found = findChromeIn(chromeDir);
+      if (found) return found;
+    } catch (_) {}
   }
 
   // 6. Fall back to undefined (Puppeteer will try its own default)

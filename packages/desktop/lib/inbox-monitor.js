@@ -200,8 +200,8 @@ class InboxMonitor {
       console.log('[inbox] Using residential proxy:', process.env.PROXY_URL);
     }
 
-    const { getChromePath } = require('./chrome-path');
-    const executablePath = getChromePath();
+    const { ensureChrome } = require('./chrome-path');
+    const executablePath = await ensureChrome();
 
     this.browser = await puppeteer.launch({
       headless: this.headless ? 'new' : false,

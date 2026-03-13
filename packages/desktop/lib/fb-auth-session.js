@@ -80,10 +80,13 @@ class FbAuthSession {
       console.log('[fb-auth] Using residential proxy:', process.env.PROXY_URL);
     }
 
+    const { ensureChrome } = require('./chrome-path');
+    const executablePath = await ensureChrome();
+
     this.browser = await puppeteer.launch({
       headless: true,
       args: launchArgs,
-      executablePath: require('./chrome-path').getChromePath(),
+      executablePath,
       defaultViewport: VIEWPORT,
     });
 
