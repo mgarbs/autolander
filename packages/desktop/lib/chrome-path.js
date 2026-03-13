@@ -59,10 +59,22 @@ function findSystemChrome() {
     ].filter(Boolean);
     for (const prefix of prefixes) {
       candidates.push(path.join(prefix, 'Google', 'Chrome', 'Application', 'chrome.exe'));
+      candidates.push(path.join(prefix, 'Microsoft', 'Edge', 'Application', 'msedge.exe'));
+      candidates.push(path.join(prefix, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'));
     }
   } else if (process.platform === 'darwin') {
-    candidates.push('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
-    candidates.push(path.join(process.env.HOME || '', 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome'));
+    const macBrowsers = [
+      'Google Chrome.app/Contents/MacOS/Google Chrome',
+      'Chromium.app/Contents/MacOS/Chromium',
+      'Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      'Brave Browser.app/Contents/MacOS/Brave Browser',
+    ];
+    const macPrefixes = ['/Applications', path.join(process.env.HOME || '', 'Applications')];
+    for (const prefix of macPrefixes) {
+      for (const browser of macBrowsers) {
+        candidates.push(path.join(prefix, browser));
+      }
+    }
   } else {
     // Linux: check common binary names via well-known paths
     const linuxPaths = [
@@ -144,31 +156,48 @@ async function ensureChrome({ onProgress } = {}) {
   // 6. Auto-download Chrome on first use
   try {
     if (onProgress) onProgress('Downloading browser engine (first time only)...');
-    console.log('[chrome-path] Chrome not found — downloading...');
+    console.log('[chrome-path] No system browser found — attempting download...');
 
-    const { install, Browser, detectBrowserPlatform } = require('@puppeteer/browsers');
+    const browsers = require('@puppeteer/browsers');
+    const { install, detectBrowserPlatform } = browsers;
+    const Browser = browsers.Browser;
+    const platform = detectBrowserPlatform();
 
     const cacheDir = process.platform === 'win32'
       ? path.join(process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Local'), 'puppeteer')
       : path.join(process.env.HOME || '', '.cache', 'puppeteer');
 
-    const result = await install({
-      browser: Browser.CHROME,
-      buildId: 'stable',
-      cacheDir,
-      platform: detectBrowserPlatform(),
-    });
+    console.log('[chrome-path] Download target: cacheDir=%s platform=%s', cacheDir, platform);
 
-    console.log('[chrome-path] Chrome downloaded to:', result.executablePath);
-    if (onProgress) onProgress('Browser engine ready.');
-    return result.executablePath;
+    // Try Chrome first, fall back to Chromium
+    const attempts = [
+      { browser: Browser.CHROME, buildId: 'stable' },
+      { browser: Browser.CHROMIUM, buildId: 'latest' },
+    ];
+
+    for (const attempt of attempts) {
+      try {
+        console.log('[chrome-path] Trying %s/%s...', attempt.browser, attempt.buildId);
+        const result = await install({
+          browser: attempt.browser,
+          buildId: attempt.buildId,
+          cacheDir,
+          platform,
+        });
+        console.log('[chrome-path] Downloaded to:', result.executablePath);
+        if (onProgress) onProgress('Browser engine ready.');
+        return result.executablePath;
+      } catch (dlErr) {
+        console.error('[chrome-path] %s download failed:', attempt.browser, dlErr.message);
+      }
+    }
   } catch (err) {
-    console.error('[chrome-path] Failed to download Chrome:', err.message);
+    console.error('[chrome-path] Auto-download failed:', err.message, err.stack);
   }
 
   // 7. Nothing worked — throw a clear error
   throw new Error(
-    'Chrome not found. Please install Google Chrome from https://www.google.com/chrome/ and restart AutoLander.'
+    'No compatible browser found. Please install Google Chrome, Microsoft Edge, or Brave from https://www.google.com/chrome/ and restart AutoLander.'
   );
 }
 
