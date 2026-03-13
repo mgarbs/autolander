@@ -23,8 +23,9 @@ function getChromeExeNames() {
 /**
  * Recursively search a directory (up to maxDepth) for a Chrome executable.
  */
-function findChromeIn(dir, maxDepth = 4, depth = 0) {
+function findChromeIn(dir, maxDepth = 5, depth = 0) {
   if (depth > maxDepth) return undefined;
+  if (!fs.existsSync(dir)) return undefined;
   const exeNames = getChromeExeNames();
 
   for (const name of exeNames) {
@@ -45,103 +46,65 @@ function findChromeIn(dir, maxDepth = 4, depth = 0) {
 }
 
 /**
- * Get the user-data directory for storing Chrome.
- * In packaged app: next to the app resources
- * In dev: packages/desktop/.chromium
- */
-function getChromeDir() {
-  try {
-    const { app } = require('electron');
-    if (app.isPackaged) {
-      return path.join(app.getPath('userData'), 'chromium');
-    }
-  } catch (_) {}
-  return path.join(__dirname, '..', '.chromium');
-}
-
-/**
- * Download Chrome for Puppeteer if not already present.
- * Returns the path to the Chrome executable.
+ * Resolve Chrome executable path for Puppeteer.
+ * Async version that checks all locations.
+ *
+ * Priority:
+ *   1. PUPPETEER_EXECUTABLE_PATH env var
+ *   2. Bundled Chrome in app resources/chromium (packaged Electron)
+ *   3. Puppeteer's .chromium cache in the project (dev mode)
+ *   4. Puppeteer's default cache (~/.cache/puppeteer)
+ *   5. Let Puppeteer resolve it (return undefined)
  */
 async function ensureChrome() {
-  // 1. Check env var
+  // 1. Env var override
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
     return process.env.PUPPETEER_EXECUTABLE_PATH;
   }
 
-  // 2. Check bundled Chrome in resources (packaged app)
+  // 2. Bundled Chrome in packaged app resources
   try {
     const { app } = require('electron');
     if (app.isPackaged) {
       const resourcesDir = path.join(process.resourcesPath, 'chromium');
-      if (fs.existsSync(resourcesDir)) {
-        const found = findChromeIn(resourcesDir);
-        if (found) return found;
+      const found = findChromeIn(resourcesDir);
+      if (found) {
+        console.log('[chrome-path] Found bundled Chrome:', found);
+        return found;
       }
     }
   } catch (_) {}
 
-  // 3. Check cached Chrome in user data
-  const chromeDir = getChromeDir();
-  if (fs.existsSync(chromeDir)) {
-    const found = findChromeIn(chromeDir);
-    if (found) return found;
+  // 3. Dev mode: .chromium dir next to lib/
+  const devChromium = path.join(__dirname, '..', '.chromium');
+  const devFound = findChromeIn(devChromium);
+  if (devFound) {
+    console.log('[chrome-path] Found dev Chrome:', devFound);
+    return devFound;
   }
 
-  // 4. Try Puppeteer's default cache
-  try {
-    const puppeteer = require('puppeteer');
-    const browser = await puppeteer.launch({ headless: true });
-    const execPath = browser.process().spawnfile;
-    await browser.close();
-    if (execPath && fs.existsSync(execPath)) return execPath;
-  } catch (_) {}
-
-  // 5. Download Chrome via Puppeteer's install API
-  console.log('[chrome-path] Chrome not found, downloading...');
-  fs.mkdirSync(chromeDir, { recursive: true });
-  try {
-    // Use @puppeteer/browsers which is bundled with puppeteer
-    const { install, Browser, detectBrowserPlatform } = require('@puppeteer/browsers');
-    const platform = detectBrowserPlatform();
-    const buildId = 'stable';
-    const result = await install({
-      browser: Browser.CHROME,
-      buildId,
-      cacheDir: chromeDir,
-      platform,
-    });
-    if (result && result.executablePath && fs.existsSync(result.executablePath)) {
-      console.log('[chrome-path] Chrome downloaded to:', result.executablePath);
-      return result.executablePath;
+  // 4. Puppeteer's default cache locations
+  const defaultCaches = [
+    path.join(process.env.HOME || process.env.USERPROFILE || '', '.cache', 'puppeteer'),
+    path.join(process.env.LOCALAPPDATA || '', 'puppeteer'),
+  ];
+  for (const cacheDir of defaultCaches) {
+    if (cacheDir) {
+      const found = findChromeIn(cacheDir);
+      if (found) {
+        console.log('[chrome-path] Found cached Chrome:', found);
+        return found;
+      }
     }
-    // Fallback: search the cache dir
-    const found = findChromeIn(chromeDir);
-    if (found) {
-      console.log('[chrome-path] Chrome found at:', found);
-      return found;
-    }
-  } catch (err) {
-    console.error('[chrome-path] Failed to download Chrome:', err.message);
-    // Fallback: try npx in dev mode
-    try {
-      const { execSync } = require('child_process');
-      execSync(`npx puppeteer browsers install chrome --path "${chromeDir}"`, {
-        stdio: 'inherit',
-        timeout: 5 * 60 * 1000,
-      });
-      const found = findChromeIn(chromeDir);
-      if (found) return found;
-    } catch (_) {}
   }
 
-  // 6. Fall back to undefined (Puppeteer will try its own default)
+  // 5. Return undefined — let Puppeteer try its own resolution
+  console.warn('[chrome-path] Chrome not found in any location');
   return undefined;
 }
 
 /**
- * Synchronous version — returns cached path or undefined.
- * Use ensureChrome() for the full download-if-missing flow.
+ * Synchronous version for backward compatibility.
  */
 function getChromePath() {
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
@@ -152,20 +115,13 @@ function getChromePath() {
     const { app } = require('electron');
     if (app.isPackaged) {
       const resourcesDir = path.join(process.resourcesPath, 'chromium');
-      if (fs.existsSync(resourcesDir)) {
-        const found = findChromeIn(resourcesDir);
-        if (found) return found;
-      }
+      const found = findChromeIn(resourcesDir);
+      if (found) return found;
     }
   } catch (_) {}
 
-  const chromeDir = getChromeDir();
-  if (fs.existsSync(chromeDir)) {
-    const found = findChromeIn(chromeDir);
-    if (found) return found;
-  }
-
-  return undefined;
+  const devChromium = path.join(__dirname, '..', '.chromium');
+  return findChromeIn(devChromium) || undefined;
 }
 
 module.exports = { getChromePath, ensureChrome };
