@@ -127,6 +127,14 @@ model Vehicle {
   status               VehicleStatus @default(ACTIVE)
   fbPosted             Boolean       @default(false)
   fbPostDate           DateTime?
+  fbListingUrl         String?
+  fbListingId          String?
+  fbPostedPrice        Float?
+  fbPostedPhotosHash   String?
+  fbPostedDescription  String?
+  fbStale              Boolean       @default(false)
+  fbStaleReason        String?
+  fbStaleSince         DateTime?
   generatedTitle       String?
   generatedDescription String?
   dealerUrl            String?
@@ -142,6 +150,7 @@ model Vehicle {
 
   @@unique([orgId, vin])
   @@index([orgId])
+  @@index([orgId, fbStale])
   @@index([orgId, status])
 }
 

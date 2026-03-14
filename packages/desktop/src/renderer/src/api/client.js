@@ -159,6 +159,12 @@ function toInventoryFormat(v) {
       facebook_marketplace: {
         posted: v.fbPosted || false,
         postedAt: v.fbPostDate,
+        listingUrl: v.fbListingUrl || null,
+        listingId: v.fbListingId || null,
+        stale: v.fbStale || false,
+        staleReason: v.fbStaleReason || null,
+        staleSince: v.fbStaleSince || null,
+        postedPrice: v.fbPostedPrice || null,
       },
     },
   };
@@ -219,10 +225,19 @@ export async function getInventory({ signal } = {}) {
 }
 
 export async function getPostQueue({ signal } = {}) {
-  const data = await fetchJSON('/api/vehicles?fbPosted=false&status=ACTIVE', { signal });
+  const [unpostedRes, staleRes] = await Promise.all([
+    fetchJSON('/api/vehicles?fbPosted=false&status=ACTIVE', { signal }),
+    fetchJSON('/api/vehicles?fbPosted=true&fbStale=true&status=ACTIVE', { signal }),
+  ]);
+  const unposted = (unpostedRes.vehicles || []).map(toInventoryFormat);
+  const stale = (staleRes.vehicles || []).map(toInventoryFormat);
   return {
-    vehicles: (data.vehicles || []).map(toInventoryFormat),
-    meta: { total: data.total || 0 },
+    vehicles: [...unposted, ...stale],
+    meta: {
+      total: unposted.length + stale.length,
+      unposted: unposted.length,
+      stale: stale.length,
+    },
   };
 }
 

@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const express = require('express');
 
 module.exports = function createVehiclesRouter(prisma) {
@@ -7,12 +8,13 @@ module.exports = function createVehiclesRouter(prisma) {
 
   router.get('/stats/summary', async (req, res) => {
     const orgId = req.orgId;
-    const [total, posted, active] = await Promise.all([
+    const [total, posted, active, stale] = await Promise.all([
       prisma.vehicle.count({ where: { orgId, status: 'ACTIVE' } }),
       prisma.vehicle.count({ where: { orgId, fbPosted: true } }),
       prisma.conversation.count({ where: { orgId, state: { notIn: ['CLOSED_WON', 'CLOSED_LOST', 'STALE'] } } }),
+      prisma.vehicle.count({ where: { orgId, fbPosted: true, fbStale: true, status: 'ACTIVE' } }),
     ]);
-    res.json({ vehicles: total, posted, activeLeads: active });
+    res.json({ vehicles: total, posted, activeLeads: active, stale });
   });
 
   router.get('/', async (req, res) => {
@@ -21,6 +23,9 @@ module.exports = function createVehiclesRouter(prisma) {
     if (status) where.status = status;
     if (req.query.fbPosted !== undefined) {
       where.fbPosted = req.query.fbPosted === 'true';
+    }
+    if (req.query.fbStale !== undefined) {
+      where.fbStale = req.query.fbStale === 'true';
     }
     if (search) {
       where.OR = [
@@ -65,6 +70,17 @@ module.exports = function createVehiclesRouter(prisma) {
       data: {
         fbPosted: true,
         fbPostDate: postedAt ? new Date(postedAt) : new Date(),
+        fbListingUrl: postUrl || null,
+        fbListingId: postId || null,
+        fbPostedPrice: vehicle.price,
+        fbPostedPhotosHash: crypto
+          .createHash('sha256')
+          .update(JSON.stringify(vehicle.photos || []))
+          .digest('hex'),
+        fbPostedDescription: vehicle.description || null,
+        fbStale: false,
+        fbStaleReason: null,
+        fbStaleSince: null,
       },
     });
 

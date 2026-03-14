@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const { parseFeed } = require('@autolander/shared/feed-parsers');
 
 function toStringOrNull(value) {
@@ -167,6 +168,38 @@ async function processVehicles(feed, parsedVehicles, prisma) {
         }
 
         if (Object.keys(changedFields).length > 0) {
+          if (existing.fbPosted && !existing.fbStale) {
+            const staleReasons = [];
+
+            if (changedFields.price !== undefined && existing.fbPostedPrice !== null) {
+              if (changedFields.price !== existing.fbPostedPrice) {
+                staleReasons.push(`price_changed:${existing.fbPostedPrice}->${changedFields.price}`);
+              }
+            }
+
+            if (changedFields.photos !== undefined && existing.fbPostedPhotosHash) {
+              const newHash = crypto
+                .createHash('sha256')
+                .update(JSON.stringify(changedFields.photos || []))
+                .digest('hex');
+              if (newHash !== existing.fbPostedPhotosHash) {
+                staleReasons.push('photos_changed');
+              }
+            }
+
+            if (changedFields.description !== undefined && existing.fbPostedDescription !== null) {
+              if (changedFields.description !== existing.fbPostedDescription) {
+                staleReasons.push('description_changed');
+              }
+            }
+
+            if (staleReasons.length > 0) {
+              changedFields.fbStale = true;
+              changedFields.fbStaleReason = staleReasons.join(',');
+              changedFields.fbStaleSince = new Date();
+            }
+          }
+
           await prisma.vehicle.update({
             where: { id: existing.id },
             data: changedFields,
