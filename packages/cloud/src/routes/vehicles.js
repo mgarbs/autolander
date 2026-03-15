@@ -38,7 +38,7 @@ module.exports = function createVehiclesRouter(prisma) {
   });
 
   router.get('/', async (req, res) => {
-    const { status, search, limit = '100', offset = '0', feedId, missingPhotos } = req.query;
+    const { status, search, limit = '1000', offset = '0', feedId, missingPhotos } = req.query;
     const where = { orgId: req.orgId };
     if (status) where.status = status;
     if (feedId) where.feedId = feedId;
