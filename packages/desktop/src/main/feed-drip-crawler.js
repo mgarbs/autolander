@@ -16,7 +16,7 @@
  *   6. When all vehicles have photos, idle and check every 10 min
  */
 
-const { BrowserWindow } = require('electron');
+const { BrowserWindow, session } = require('electron');
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -53,6 +53,18 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Race a promise against a timeout. Rejects with a timeout error if
+ * the promise doesn't settle within `ms` milliseconds.
+ */
+function withTimeout(promise, ms, label = 'Operation') {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 class FeedDripCrawler {
   constructor() {
     this.serverUrl = '';
@@ -60,6 +72,7 @@ class FeedDripCrawler {
     this.running = false;
     this.stopped = false;
     this.win = null;
+    this.crashed = false;
     this.stats = { processed: 0, photosFound: 0, failed: 0 };
   }
 
@@ -74,6 +87,7 @@ class FeedDripCrawler {
     this.serverUrl = serverUrl;
     this.accessToken = accessToken;
     this.stopped = false;
+    this.crashed = false;
     this.stats = { processed: 0, photosFound: 0, failed: 0 };
 
     console.log('[drip-crawler] Starting background photo crawler');
@@ -92,6 +106,7 @@ class FeedDripCrawler {
       try { this.win.destroy(); } catch (_) {}
     }
     this.win = null;
+    this.crashed = false;
   }
 
   _buildApiUrl(pathname) {
@@ -123,7 +138,6 @@ class FeedDripCrawler {
         }
 
         console.log(`[drip-crawler] Found ${vehicles.length} vehicles needing photos`);
-        await this._ensureWindow();
 
         let updated = 0;
         let skipped = 0;
@@ -134,6 +148,10 @@ class FeedDripCrawler {
           const name = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || vehicle.vin || 'Vehicle';
 
           try {
+            // Fresh window per vehicle — prevents stale renderer crashes
+            this._destroyWindow();
+            await this._createWindow();
+
             const photos = await this._fetchPhotosForVehicle(vehicle);
 
             if (photos.length > 0) {
@@ -149,6 +167,8 @@ class FeedDripCrawler {
             skipped += 1;
             this.stats.failed += 1;
             console.warn(`[drip-crawler] ${name}: ${error.message}`);
+          } finally {
+            this._destroyWindow();
           }
 
           this.stats.processed += 1;
@@ -156,8 +176,6 @@ class FeedDripCrawler {
           // Generous pause between vehicles
           if (!this.stopped) await delay(BETWEEN_VEHICLES_MS);
         }
-
-        this._destroyWindow();
 
         console.log(
           `[drip-crawler] Batch done: ${updated} updated, ${skipped} skipped — ` +
@@ -191,8 +209,11 @@ class FeedDripCrawler {
     return Array.isArray(data?.vehicles) ? data.vehicles : [];
   }
 
-  async _ensureWindow() {
-    if (this.win && !this.win.isDestroyed()) return;
+  async _createWindow() {
+    // Use an isolated session partition so the crawler doesn't interfere
+    // with the main Electron window's session/cookies
+    const crawlerSession = session.fromPartition('persist:drip-crawler');
+    crawlerSession.setUserAgent(UA);
 
     this.win = new BrowserWindow({
       show: false,
@@ -201,10 +222,21 @@ class FeedDripCrawler {
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
+        session: crawlerSession,
       },
     });
 
-    await this.win.webContents.session.setUserAgent(UA);
+    this.crashed = false;
+
+    // Detect renderer crashes so we don't hang on executeJavaScript
+    this.win.webContents.on('render-process-gone', (_event, details) => {
+      console.warn(`[drip-crawler] Renderer crashed: ${details?.reason || 'unknown'}`);
+      this.crashed = true;
+    });
+
+    this.win.webContents.on('destroyed', () => {
+      this.crashed = true;
+    });
   }
 
   async _fetchPhotosForVehicle(vehicle) {
@@ -222,14 +254,12 @@ class FeedDripCrawler {
     // Scroll to trigger lazy-loaded images
     let bestUrls = [];
     for (let pass = 0; pass < SCROLL_PASSES; pass += 1) {
-      if (this.stopped) return [];
+      if (this.stopped || this.crashed) return bestUrls;
 
-      await this.win.webContents.executeJavaScript(
-        'window.scrollTo(0, document.body.scrollHeight)'
-      );
+      await this._safeExecuteJS('window.scrollTo(0, document.body.scrollHeight)');
       await delay(SCROLL_DELAY_MS);
 
-      const urls = await this.win.webContents.executeJavaScript(DETAIL_IMAGES_JS);
+      const urls = await this._safeExecuteJS(DETAIL_IMAGES_JS);
       const normalized = Array.isArray(urls) ? urls : [];
 
       if (normalized.length > bestUrls.length) {
@@ -242,12 +272,45 @@ class FeedDripCrawler {
     return bestUrls;
   }
 
+  /**
+   * Execute JavaScript in the window with a timeout guard.
+   * Returns undefined if the window is crashed/destroyed.
+   */
+  async _safeExecuteJS(script) {
+    if (this.crashed || !this.win || this.win.isDestroyed()) {
+      return undefined;
+    }
+    try {
+      return await withTimeout(
+        this.win.webContents.executeJavaScript(script),
+        10_000,
+        'executeJavaScript'
+      );
+    } catch (error) {
+      if (error.message.includes('timed out')) {
+        console.warn('[drip-crawler] executeJavaScript timed out — marking window as crashed');
+        this.crashed = true;
+      }
+      return undefined;
+    }
+  }
+
   async _loadPage(url) {
     const maxRetries = 3;
 
     for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+      if (this.crashed) {
+        throw new Error('Window crashed');
+      }
+
       try {
-        await this.win.loadURL(url);
+        // Wrap loadURL in a timeout — it can hang indefinitely if
+        // the renderer process dies silently (common on macOS arm64)
+        await withTimeout(
+          this.win.loadURL(url),
+          PAGE_LOAD_TIMEOUT_MS,
+          `loadURL(${url})`
+        );
         // Wait for page to be interactive
         await this._waitForPageReady();
         return;
@@ -261,8 +324,11 @@ class FeedDripCrawler {
         );
         await delay(backoff);
 
-        // Recreate window if it was destroyed
-        await this._ensureWindow();
+        // Recreate window if it crashed
+        if (this.crashed || !this.win || this.win.isDestroyed()) {
+          this._destroyWindow();
+          await this._createWindow();
+        }
       }
     }
   }
@@ -271,11 +337,9 @@ class FeedDripCrawler {
     const startedAt = Date.now();
 
     while (Date.now() - startedAt < PAGE_LOAD_TIMEOUT_MS) {
-      if (this.stopped) throw new Error('Crawler stopped');
+      if (this.stopped || this.crashed) return;
 
-      const readyState = await this.win.webContents.executeJavaScript(
-        'document.readyState'
-      );
+      const readyState = await this._safeExecuteJS('document.readyState');
 
       if (readyState === 'complete' || readyState === 'interactive') {
         // Give a moment for dynamic content
@@ -283,10 +347,14 @@ class FeedDripCrawler {
         return;
       }
 
+      if (readyState === undefined) {
+        // Window is dead
+        return;
+      }
+
       await delay(1000);
     }
 
-    // Don't throw — page might still have usable content
     console.warn('[drip-crawler] Page load timed out, proceeding anyway');
   }
 
