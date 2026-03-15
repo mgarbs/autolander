@@ -3,66 +3,53 @@
 /**
  * Feed Drip Crawler — "sucker fish" background photo fetcher.
  *
- * Instead of batch-loading all search pages (which triggers anti-bot),
- * this crawls one vehicle detail page at a time with generous delays.
- * Vehicles appear with photos gradually as the crawler works through them.
+ * Fetches vehicle detail pages via plain HTTP + cheerio (no browser needed).
+ * Cars.com serves full image URLs in server-rendered HTML, so we don't need
+ * Electron BrowserWindow or Puppeteer — just fetch and parse.
  *
  * Flow:
  *   1. Query API for a small batch of vehicles missing photos
- *   2. For each vehicle, load its detail page directly via dealerUrl
- *   3. Scrape photos, save immediately via API
- *   4. Wait 10-20s before the next vehicle
- *   5. When batch is done, wait 2 min and check for more
- *   6. When all vehicles have photos, idle and check every 10 min
+ *   2. For each vehicle, HTTP-fetch its detail page via dealerUrl
+ *   3. Parse HTML with cheerio to extract photo URLs
+ *   4. Save photos immediately via API
+ *   5. Wait between vehicles to avoid rate limits
+ *   6. When batch is done, wait and check for more
+ *   7. When all vehicles have photos, idle and check periodically
  */
 
-const { BrowserWindow, session, powerSaveBlocker } = require('electron');
+const cheerio = require('cheerio');
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 // Timing — slow and steady to avoid rate limits
-const BETWEEN_VEHICLES_MS = 15_000;       // 15s between each vehicle
+const BETWEEN_VEHICLES_MS = 5_000;        // 5s between each vehicle (faster since no browser)
 const BETWEEN_BATCHES_MS = 2 * 60_000;    // 2 min between batches
 const IDLE_CHECK_MS = 10 * 60_000;        // 10 min when nothing to do
-const PAGE_LOAD_TIMEOUT_MS = 30_000;      // 30s to load a detail page
-const SCROLL_DELAY_MS = 800;
-const SCROLL_PASSES = 6;
-const BATCH_SIZE = 5;                     // vehicles per batch
-
-const DETAIL_IMAGES_JS = `
-  (function() {
-    var urls = [];
-    var seen = {};
-    var imgs = document.querySelectorAll('img[src*="cstatic-images.com"]');
-    for (var i = 0; i < imgs.length; i += 1) {
-      var src = imgs[i].src || '';
-      if (!src) continue;
-      if (src.indexOf('dealer_media') !== -1) continue;
-      if (src.indexOf('static/app-images') !== -1) continue;
-      if (/\\.svg(?:\\?|#|$)/i.test(src)) continue;
-      if (seen[src]) continue;
-      seen[src] = true;
-      urls.push(src);
-    }
-    return urls;
-  })()
-`;
+const FETCH_TIMEOUT_MS = 20_000;          // 20s per HTTP request
+const BATCH_SIZE = 10;                    // vehicles per batch (can be bigger without browser)
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Race a promise against a timeout. Rejects with a timeout error if
- * the promise doesn't settle within `ms` milliseconds.
- */
-function withTimeout(promise, ms, label = 'Operation') {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+function extractPhotos(html) {
+  const $ = cheerio.load(html);
+  const urls = [];
+  const seen = new Set();
+
+  $('img[src*="cstatic-images.com"]').each((_, el) => {
+    const src = $(el).attr('src') || '';
+    if (!src) return;
+    if (src.includes('dealer_media')) return;
+    if (src.includes('static/app-images')) return;
+    if (/\.svg(?:\?|#|$)/i.test(src)) return;
+    if (seen.has(src)) return;
+    seen.add(src);
+    urls.push(src);
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+
+  return urls;
 }
 
 class FeedDripCrawler {
@@ -71,8 +58,6 @@ class FeedDripCrawler {
     this.accessToken = '';
     this.running = false;
     this.stopped = false;
-    this.win = null;
-    this.crashed = false;
     this.stats = { processed: 0, photosFound: 0, failed: 0 };
   }
 
@@ -87,27 +72,16 @@ class FeedDripCrawler {
     this.serverUrl = serverUrl;
     this.accessToken = accessToken;
     this.stopped = false;
-    this.crashed = false;
     this.stats = { processed: 0, photosFound: 0, failed: 0 };
 
-    console.log('[drip-crawler] Starting background photo crawler');
+    console.log('[drip-crawler] Starting background photo crawler (HTTP mode)');
     this._runLoop();
   }
 
   stop() {
     this.stopped = true;
     this.running = false;
-    this._destroyWindow();
-    this._stopPowerBlock();
     console.log('[drip-crawler] Stopped');
-  }
-
-  _destroyWindow() {
-    if (this.win && !this.win.isDestroyed()) {
-      try { this.win.destroy(); } catch (_) {}
-    }
-    this.win = null;
-    this.crashed = false;
   }
 
   _buildApiUrl(pathname) {
@@ -119,22 +93,6 @@ class FeedDripCrawler {
       Authorization: `Bearer ${this.accessToken}`,
       'Content-Type': 'application/json',
     };
-  }
-
-  _startPowerBlock() {
-    if (this._powerBlockId != null) return;
-    try {
-      this._powerBlockId = powerSaveBlocker.start('prevent-app-suspension');
-      console.log('[drip-crawler] Power save blocker started');
-    } catch (_) {}
-  }
-
-  _stopPowerBlock() {
-    if (this._powerBlockId == null) return;
-    try {
-      powerSaveBlocker.stop(this._powerBlockId);
-    } catch (_) {}
-    this._powerBlockId = null;
   }
 
   async _runLoop() {
@@ -150,13 +108,9 @@ class FeedDripCrawler {
 
         if (vehicles.length === 0) {
           console.log('[drip-crawler] All vehicles have photos — idling');
-          this._stopPowerBlock();
           await delay(IDLE_CHECK_MS);
           continue;
         }
-
-        // Prevent macOS from suspending the app while crawling
-        this._startPowerBlock();
 
         console.log(`[drip-crawler] Found ${vehicles.length} vehicles needing photos`);
 
@@ -169,10 +123,6 @@ class FeedDripCrawler {
           const name = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || vehicle.vin || 'Vehicle';
 
           try {
-            // Fresh window per vehicle — prevents stale renderer crashes
-            this._destroyWindow();
-            await this._createWindow();
-
             const photos = await this._fetchPhotosForVehicle(vehicle);
 
             if (photos.length > 0) {
@@ -182,19 +132,16 @@ class FeedDripCrawler {
               console.log(`[drip-crawler] ${name}: ${photos.length} photos saved`);
             } else {
               skipped += 1;
-              console.log(`[drip-crawler] ${name}: no photos found on detail page`);
+              console.log(`[drip-crawler] ${name}: no photos found`);
             }
           } catch (error) {
             skipped += 1;
             this.stats.failed += 1;
             console.warn(`[drip-crawler] ${name}: ${error.message}`);
-          } finally {
-            this._destroyWindow();
           }
 
           this.stats.processed += 1;
 
-          // Generous pause between vehicles
           if (!this.stopped) await delay(BETWEEN_VEHICLES_MS);
         }
 
@@ -203,17 +150,13 @@ class FeedDripCrawler {
           `lifetime: ${this.stats.processed} processed, ${this.stats.photosFound} photos, ${this.stats.failed} failed`
         );
 
-        // Wait before next batch
         if (!this.stopped) await delay(BETWEEN_BATCHES_MS);
       } catch (error) {
         console.error('[drip-crawler] Loop error:', error.message);
-        this._destroyWindow();
         if (!this.stopped) await delay(BETWEEN_BATCHES_MS);
       }
     }
 
-    this._destroyWindow();
-    this._stopPowerBlock();
     this.running = false;
   }
 
@@ -231,162 +174,26 @@ class FeedDripCrawler {
     return Array.isArray(data?.vehicles) ? data.vehicles : [];
   }
 
-  async _createWindow() {
-    // Use an isolated session partition so the crawler doesn't interfere
-    // with the main Electron window's session/cookies
-    const crawlerSession = session.fromPartition('persist:drip-crawler');
-    crawlerSession.setUserAgent(UA);
-
-    // Position off-screen instead of show:false — macOS App Nap suspends
-    // hidden windows, causing loadURL/executeJavaScript to hang after 2-3 loads
-    this.win = new BrowserWindow({
-      show: true,
-      x: -10000,
-      y: -10000,
-      width: 1920,
-      height: 1080,
-      skipTaskbar: true,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        backgroundThrottling: false,
-        session: crawlerSession,
-      },
-    });
-
-    // Prevent macOS from showing in dock/taskbar
-    this.win.setSkipTaskbar(true);
-
-    this.crashed = false;
-
-    // Detect renderer crashes so we don't hang on executeJavaScript
-    this.win.webContents.on('render-process-gone', (_event, details) => {
-      console.warn(`[drip-crawler] Renderer crashed: ${details?.reason || 'unknown'}`);
-      this.crashed = true;
-    });
-
-    this.win.webContents.on('destroyed', () => {
-      this.crashed = true;
-    });
-  }
-
   async _fetchPhotosForVehicle(vehicle) {
     if (!vehicle.dealerUrl) {
       throw new Error('No dealer URL');
     }
 
-    // Load the vehicle's detail page directly
     const detailUrl = vehicle.dealerUrl.startsWith('http')
       ? vehicle.dealerUrl
       : `https://www.cars.com${vehicle.dealerUrl}`;
 
-    await this._loadPage(detailUrl);
+    const response = await fetch(detailUrl, {
+      headers: { 'User-Agent': UA },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
 
-    // Scroll to trigger lazy-loaded images
-    let bestUrls = [];
-    for (let pass = 0; pass < SCROLL_PASSES; pass += 1) {
-      if (this.stopped || this.crashed) return bestUrls;
-
-      await this._safeExecuteJS('window.scrollTo(0, document.body.scrollHeight)');
-      await delay(SCROLL_DELAY_MS);
-
-      const urls = await this._safeExecuteJS(DETAIL_IMAGES_JS);
-      const normalized = Array.isArray(urls) ? urls : [];
-
-      if (normalized.length > bestUrls.length) {
-        bestUrls = normalized;
-      } else if (normalized.length > 0 && normalized.length === bestUrls.length) {
-        break; // No new images found, stop scrolling
-      }
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} fetching ${detailUrl}`);
     }
 
-    return bestUrls;
-  }
-
-  /**
-   * Execute JavaScript in the window with a timeout guard.
-   * Returns undefined if the window is crashed/destroyed.
-   */
-  async _safeExecuteJS(script) {
-    if (this.crashed || !this.win || this.win.isDestroyed()) {
-      return undefined;
-    }
-    try {
-      return await withTimeout(
-        this.win.webContents.executeJavaScript(script),
-        10_000,
-        'executeJavaScript'
-      );
-    } catch (error) {
-      if (error.message.includes('timed out')) {
-        console.warn('[drip-crawler] executeJavaScript timed out — marking window as crashed');
-        this.crashed = true;
-      }
-      return undefined;
-    }
-  }
-
-  async _loadPage(url) {
-    const maxRetries = 3;
-
-    for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
-      if (this.crashed) {
-        throw new Error('Window crashed');
-      }
-
-      try {
-        // Wrap loadURL in a timeout — it can hang indefinitely if
-        // the renderer process dies silently (common on macOS arm64)
-        await withTimeout(
-          this.win.loadURL(url),
-          PAGE_LOAD_TIMEOUT_MS,
-          `loadURL(${url})`
-        );
-        // Wait for page to be interactive
-        await this._waitForPageReady();
-        return;
-      } catch (error) {
-        if (this.stopped) throw new Error('Crawler stopped');
-        if (attempt >= maxRetries) throw error;
-
-        const backoff = 5000 * attempt;
-        console.warn(
-          `[drip-crawler] Page load failed (attempt ${attempt}/${maxRetries}): ${error.message} — retrying in ${backoff}ms`
-        );
-        await delay(backoff);
-
-        // Recreate window if it crashed
-        if (this.crashed || !this.win || this.win.isDestroyed()) {
-          this._destroyWindow();
-          await this._createWindow();
-        }
-      }
-    }
-  }
-
-  async _waitForPageReady() {
-    const startedAt = Date.now();
-
-    while (Date.now() - startedAt < PAGE_LOAD_TIMEOUT_MS) {
-      if (this.stopped || this.crashed) return;
-
-      const readyState = await this._safeExecuteJS('document.readyState');
-
-      if (readyState === 'complete' || readyState === 'interactive') {
-        // Give a moment for dynamic content
-        await delay(2000);
-        return;
-      }
-
-      if (readyState === undefined) {
-        // Window is dead
-        return;
-      }
-
-      await delay(1000);
-    }
-
-    console.warn('[drip-crawler] Page load timed out, proceeding anyway');
+    const html = await response.text();
+    return extractPhotos(html);
   }
 
   async _savePhotos(vehicleId, photos) {
