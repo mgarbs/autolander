@@ -16,7 +16,7 @@
  *   6. When all vehicles have photos, idle and check every 10 min
  */
 
-const { BrowserWindow, session } = require('electron');
+const { BrowserWindow, session, powerSaveBlocker } = require('electron');
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -98,6 +98,7 @@ class FeedDripCrawler {
     this.stopped = true;
     this.running = false;
     this._destroyWindow();
+    this._stopPowerBlock();
     console.log('[drip-crawler] Stopped');
   }
 
@@ -120,6 +121,22 @@ class FeedDripCrawler {
     };
   }
 
+  _startPowerBlock() {
+    if (this._powerBlockId != null) return;
+    try {
+      this._powerBlockId = powerSaveBlocker.start('prevent-app-suspension');
+      console.log('[drip-crawler] Power save blocker started');
+    } catch (_) {}
+  }
+
+  _stopPowerBlock() {
+    if (this._powerBlockId == null) return;
+    try {
+      powerSaveBlocker.stop(this._powerBlockId);
+    } catch (_) {}
+    this._powerBlockId = null;
+  }
+
   async _runLoop() {
     if (this.running) return;
     this.running = true;
@@ -133,9 +150,13 @@ class FeedDripCrawler {
 
         if (vehicles.length === 0) {
           console.log('[drip-crawler] All vehicles have photos — idling');
+          this._stopPowerBlock();
           await delay(IDLE_CHECK_MS);
           continue;
         }
+
+        // Prevent macOS from suspending the app while crawling
+        this._startPowerBlock();
 
         console.log(`[drip-crawler] Found ${vehicles.length} vehicles needing photos`);
 
@@ -192,6 +213,7 @@ class FeedDripCrawler {
     }
 
     this._destroyWindow();
+    this._stopPowerBlock();
     this.running = false;
   }
 
@@ -215,16 +237,25 @@ class FeedDripCrawler {
     const crawlerSession = session.fromPartition('persist:drip-crawler');
     crawlerSession.setUserAgent(UA);
 
+    // Position off-screen instead of show:false — macOS App Nap suspends
+    // hidden windows, causing loadURL/executeJavaScript to hang after 2-3 loads
     this.win = new BrowserWindow({
-      show: false,
+      show: true,
+      x: -10000,
+      y: -10000,
       width: 1920,
       height: 1080,
+      skipTaskbar: true,
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
+        backgroundThrottling: false,
         session: crawlerSession,
       },
     });
+
+    // Prevent macOS from showing in dock/taskbar
+    this.win.setSkipTaskbar(true);
 
     this.crashed = false;
 
