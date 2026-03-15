@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getFbAuthStatus, deleteFbSession, getFeeds, createFeed, syncFeed, syncFeedHtml, saveGmailConfig, getEmailStatus, getDealerContact, saveDealerContact } from '../api/client';
+import { getFbAuthStatus, deleteFbSession, getFeeds, createFeed, updateFeed, deleteFeed, clearFeedVehicles, syncFeed, syncFeedHtml, saveGmailConfig, getEmailStatus, getDealerContact, saveDealerContact } from '../api/client';
 import { buildFeedAutoSyncMessage, getFeedAutoSyncDismissMs } from '../lib/feed-auto-sync';
 import {
   Settings as SettingsIcon,
@@ -57,19 +57,22 @@ export default function Settings() {
 
   const loadStatus = () => getFbAuthStatus().then(setFbStatus).catch(() => {});
 
-  const loadFeeds = () =>
-    getFeeds()
-      .then(res => {
-        const list = res.feeds || [];
-        setFeeds(list);
-        if (list.length > 0) {
-          const feed = list[0];
-          setActiveFeed(feed);
-          setFeedUrl(feed.feedUrl || '');
-          setDealerName(feed.name || '');
-        }
-      })
-      .catch(() => {});
+  const loadFeeds = async () => {
+    try {
+      const res = await getFeeds();
+      const list = res.feeds || [];
+      const feed = list[0] || null;
+      setFeeds(list);
+      setActiveFeed(feed);
+      if (feed) {
+        setFeedUrl(feed.feedUrl || '');
+        setDealerName(feed.name || '');
+      }
+      return feed;
+    } catch {
+      return null;
+    }
+  };
 
   const loadEmailStatus = () =>
     getEmailStatus()
@@ -142,17 +145,66 @@ export default function Settings() {
     }
   };
 
+  const removeExtraFeeds = async (keepFeedId) => {
+    const res = await getFeeds();
+    const extraFeeds = (res.feeds || []).filter(feed => feed.id !== keepFeedId);
+
+    for (const feed of extraFeeds) {
+      await clearFeedVehicles(feed.id);
+      await deleteFeed(feed.id);
+    }
+  };
+
   const handleSaveFeed = async () => {
     if (!feedUrl.trim()) { setFeedMsg({ type: 'error', text: 'Enter a feed URL' }); return; }
     setFeedSaving(true);
     setFeedMsg(null);
     try {
-      await createFeed({
-        feedUrl: feedUrl.trim(),
-        name: dealerName.trim() || null,
+      const newUrl = feedUrl.trim();
+      const newName = dealerName.trim() || null;
+
+      if (activeFeed) {
+        const urlChanged = newUrl !== activeFeed.feedUrl;
+        const nameChanged = newName !== (activeFeed.name || null);
+
+        if (!urlChanged && !nameChanged) {
+          setFeedMsg({ type: 'success', text: 'Feed already up to date' });
+          return;
+        }
+
+        await updateFeed(activeFeed.id, {
+          feedUrl: newUrl,
+          name: newName,
+        });
+
+        if (urlChanged) {
+          await clearFeedVehicles(activeFeed.id);
+          setFeedMsg({ type: 'info', text: 'Feed updated. Old inventory cleared. Syncing new feed...' });
+        } else {
+          setFeedMsg({ type: 'success', text: 'Feed saved.' });
+        }
+
+        await removeExtraFeeds(activeFeed.id);
+        const refreshedFeed = await loadFeeds();
+
+        if (urlChanged) {
+          window.setTimeout(() => {
+            void handleSync(refreshedFeed);
+          }, 500);
+        }
+        return;
+      }
+
+      const createdFeed = await createFeed({
+        feedUrl: newUrl,
+        name: newName,
       });
-      await loadFeeds();
-      setFeedMsg({ type: 'success', text: 'Feed saved successfully' });
+      setFeedMsg({ type: 'success', text: 'Feed created. Syncing...' });
+      await removeExtraFeeds(createdFeed.id);
+      const refreshedFeed = await loadFeeds();
+      window.setTimeout(() => {
+        void handleSync(refreshedFeed || createdFeed);
+      }, 500);
     } catch (e) {
       setFeedMsg({ type: 'error', text: 'Failed to save: ' + e.message });
     } finally {
@@ -160,8 +212,9 @@ export default function Settings() {
     }
   };
 
-  const handleSync = async () => {
-    if (!activeFeed) return;
+  const handleSync = async (feedOverride = null) => {
+    const feed = feedOverride || activeFeed;
+    if (!feed) return;
     setFeedSyncing(true);
     setFeedMsg({ type: 'info', text: 'Syncing inventory...' });
     let stopFeedSyncProgress = null;
@@ -170,11 +223,11 @@ export default function Settings() {
 
       // For bot-protected feeds, use Electron's hidden browser to fetch HTML first.
       const needsBrowserFetch =
-        activeFeed.feedType === 'CARGURUS' ||
-        activeFeed.feedType === 'CARSCOM' ||
-        (activeFeed.feedUrl && (
-          activeFeed.feedUrl.includes('cargurus.com') ||
-          activeFeed.feedUrl.includes('cars.com')
+        feed.feedType === 'CARGURUS' ||
+        feed.feedType === 'CARSCOM' ||
+        (feed.feedUrl && (
+          feed.feedUrl.includes('cargurus.com') ||
+          feed.feedUrl.includes('cars.com')
         ));
 
       if (needsBrowserFetch && window.autolander?.fetchFeedHtml) {
@@ -187,7 +240,7 @@ export default function Settings() {
 
         setFeedMsg({ type: 'info', text: 'Loading dealer page in browser...' });
 
-        const fetchResult = await window.autolander.fetchFeedHtml(activeFeed.feedUrl);
+        const fetchResult = await window.autolander.fetchFeedHtml(feed.feedUrl);
 
         if (!fetchResult.success || !fetchResult.html) {
           throw new Error(fetchResult.error || 'Failed to load dealer page');
@@ -196,10 +249,10 @@ export default function Settings() {
         setFeedMsg({ type: 'info', text: 'Parsing inventory data...' });
 
         // Send the HTML to the cloud API for parsing and sync
-        result = await syncFeedHtml(activeFeed.id, fetchResult.html);
+        result = await syncFeedHtml(feed.id, fetchResult.html);
       } else {
         // For non-browser feeds, use the normal server-side sync
-        result = await syncFeed(activeFeed.id);
+        result = await syncFeed(feed.id);
       }
 
       await loadFeeds();
@@ -510,7 +563,7 @@ export default function Settings() {
               {feedSaving ? 'Saving...' : 'Save Feed'}
             </button>
             <button
-              onClick={handleSync}
+              onClick={() => handleSync()}
               disabled={feedSyncing || !activeFeed}
               className="flex-1 py-3 bg-surface-900 hover:bg-surface-800 text-surface-300 text-xs font-black uppercase tracking-widest rounded-xl border border-surface-800 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
             >

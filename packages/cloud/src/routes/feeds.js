@@ -42,8 +42,12 @@ module.exports = function createFeedsRouter(prisma) {
   router.put('/:id', requireRole('ADMIN', 'MANAGER'), async (req, res) => {
     const { feedUrl, feedType, name, syncScheduleCron, enabled } = req.body;
     const data = {};
-    if (feedUrl) data.feedUrl = feedUrl;
-    if (feedType) data.feedType = feedType;
+    if (feedUrl) {
+      data.feedUrl = feedUrl;
+      data.feedType = feedType || detectFeedType(feedUrl);
+    } else if (feedType) {
+      data.feedType = feedType;
+    }
     if (name !== undefined) data.name = name;
     if (syncScheduleCron) data.syncScheduleCron = syncScheduleCron;
     if (enabled !== undefined) data.enabled = enabled;
@@ -54,6 +58,29 @@ module.exports = function createFeedsRouter(prisma) {
     });
     if (result.count === 0) return res.status(404).json({ error: 'Feed not found.' });
     res.json({ success: true });
+  });
+
+  // Clear all vehicles for a feed when switching sources
+  router.delete('/:id/vehicles', requireRole('ADMIN', 'MANAGER'), async (req, res) => {
+    const feed = await prisma.inventoryFeed.findFirst({
+      where: { id: req.params.id, orgId: req.orgId },
+    });
+    if (!feed) return res.status(404).json({ error: 'Feed not found.' });
+
+    const deleted = await prisma.vehicle.deleteMany({
+      where: { feedId: feed.id, orgId: req.orgId },
+    });
+
+    await prisma.inventoryFeed.update({
+      where: { id: feed.id },
+      data: {
+        vehicleCount: 0,
+        lastSyncAt: null,
+        lastSyncStatus: null,
+      },
+    });
+
+    res.json({ success: true, vehiclesDeleted: deleted.count });
   });
 
   // Delete a feed

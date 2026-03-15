@@ -329,6 +329,21 @@ export function createFeed(data) {
   return fetchJSON('/api/feeds', { method: 'POST', body: JSON.stringify(data) });
 }
 
+export function updateFeed(feedId, data) {
+  return fetchJSON(`/api/feeds/${feedId}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteFeed(feedId) {
+  return fetchJSON(`/api/feeds/${feedId}`, { method: 'DELETE' });
+}
+
+export function clearFeedVehicles(feedId) {
+  return fetchJSON(`/api/feeds/${feedId}/vehicles`, { method: 'DELETE' });
+}
+
 export function syncFeed(feedId) {
   return fetchJSON(`/api/feeds/${feedId}/sync`, { method: 'POST' });
 }
