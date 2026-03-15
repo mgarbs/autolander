@@ -65,6 +65,11 @@ jobs:
           mkdir -p packages/desktop/node_modules/@autolander
           cp -r packages/shared packages/desktop/node_modules/@autolander/shared
 
+      - name: Verify drip crawler
+        if: matrix.platform == 'mac'
+        working-directory: packages/desktop
+        run: node test-drip-crawler.js
+
       - name: Build renderer
         working-directory: packages/desktop
         run: npx vite build --config src/renderer/vite.config.js src/renderer
