@@ -105,10 +105,8 @@ export function RealtimeProvider({ children }) {
 
       setSyncState(nextState);
 
-      if (
-        (event?.type === 'auto-sync-complete' || event?.type === 'image-fetch-complete') &&
-        message?.text
-      ) {
+      // Only show toast for manual sync — auto-sync and drip crawler are silent
+      if (event?.type === 'manual-sync-complete' && message?.text) {
         showNotification(message.text, 'success');
       }
 

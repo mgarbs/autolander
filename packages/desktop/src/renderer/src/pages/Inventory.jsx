@@ -1,24 +1,22 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useInventory } from '../hooks/useInventory';
-import { useRealtime } from '../context/RealtimeContext';
 import { markVehicleSold } from '../api/client';
-import { getSyncState, onSyncStateChange } from '../lib/sync-state';
 import Badge from '../components/Badge';
 import FilterDropdown from '../components/FilterDropdown';
-import { 
-  CarFront, 
-  Search, 
-  MapPin, 
-  History, 
+import {
+  CarFront,
+  Search,
+  History,
   ExternalLink,
-  DollarSign,
-  Zap,
   Tag,
   Share2,
-  RefreshCw,
-  AlertCircle
+  AlertCircle,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
+
+const PER_PAGE = 12;
 
 function formatPrice(price) {
   if (!price) return 'N/A';
@@ -27,43 +25,12 @@ function formatPrice(price) {
 
 export default function Inventory() {
   const { inventory, loading, refresh } = useInventory();
-  const { lastEvents } = useRealtime();
-  const [showRefreshBanner, setShowRefreshBanner] = useState(false);
-  const [currentSyncState, setCurrentSyncState] = useState(() => getSyncState());
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMake, setFilterMake] = useState('All');
   const [filterBody, setFilterBody] = useState('All');
   const [filterStatus, setFilterStatus] = useState('All');
   const [sortBy, setSortBy] = useState('price-asc');
-
-  useEffect(() => {
-    if (lastEvents.inventory) {
-      setShowRefreshBanner(true);
-    }
-  }, [lastEvents.inventory]);
-
-  useEffect(() => {
-    const unsubscribe = onSyncStateChange((nextState) => {
-      setCurrentSyncState(nextState);
-
-      if (
-        nextState?.event?.type === 'auto-sync-complete' ||
-        nextState?.event?.type === 'image-fetch-complete' ||
-        nextState?.event?.type === 'manual-sync-complete'
-      ) {
-        setShowRefreshBanner(true);
-      }
-    });
-
-    return () => {
-      unsubscribe();
-    };
-  }, []);
-
-  const handleRefresh = () => {
-    setShowRefreshBanner(false);
-    refresh();
-  };
+  const [page, setPage] = useState(1);
 
   const handleMarkSold = async (vehicle) => {
     const confirmed = window.confirm(
@@ -115,45 +82,26 @@ export default function Inventory() {
     }
   });
 
+  // Pagination
+  const totalFiltered = vehicles.length;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / PER_PAGE));
+  const safePage = Math.min(page, totalPages);
+  const paginated = vehicles.slice((safePage - 1) * PER_PAGE, safePage * PER_PAGE);
+
+  const pageNumbers = [];
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === 1 || i === totalPages || (i >= safePage - 1 && i <= safePage + 1)) {
+      pageNumbers.push(i);
+    } else if (pageNumbers[pageNumbers.length - 1] !== '...') {
+      pageNumbers.push('...');
+    }
+  }
+
   const live = allVehicles.filter(v => (v.status || 'available') === 'available').length;
   const sold = allVehicles.filter(v => v.status === 'sold' || v.status === 'potentially_sold').length;
 
   return (
     <div className="space-y-8 pb-12">
-      {currentSyncState?.message && (
-        <div className={`flex items-center gap-2 p-3 rounded-2xl text-xs font-bold uppercase tracking-widest ${
-          currentSyncState.message.type === 'success'
-            ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
-            : currentSyncState.message.type === 'info'
-            ? 'bg-blue-500/10 border border-blue-500/20 text-blue-400'
-            : 'bg-rose-500/10 border border-rose-500/20 text-rose-400'
-        }`}>
-          {currentSyncState.message.type === 'success' ? <Zap size={14} /> : currentSyncState.message.type === 'info' ? <RefreshCw size={14} className="animate-spin" /> : <AlertCircle size={14} />}
-          {currentSyncState.message.text}
-        </div>
-      )}
-
-      <AnimatePresence>
-        {showRefreshBanner && (
-          <motion.div 
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="overflow-hidden"
-          >
-            <button 
-              onClick={handleRefresh}
-              className="w-full bg-brand-500/10 border border-brand-500/20 py-3 rounded-2xl flex items-center justify-center gap-3 group hover:bg-brand-500/20 transition-all"
-            >
-              <RefreshCw size={16} className="text-brand-500 group-hover:rotate-180 transition-transform duration-500" />
-              <span className="text-sm font-black uppercase tracking-widest text-brand-400">
-                New inventory updates available — click to refresh
-              </span>
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       <header className="flex flex-col md:flex-row md:items-end justify-between gap-6">
         <div className="space-y-1">
           <div className="flex items-center gap-2 text-brand-500 font-bold text-xs uppercase tracking-widest">
@@ -175,7 +123,7 @@ export default function Inventory() {
               type="text"
               placeholder="Search VIN or Model..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => { setSearchQuery(e.target.value); setPage(1); }}
               className="pl-9 pr-4 py-2.5 bg-surface-900 border border-surface-800 rounded-xl text-xs font-bold text-surface-400 focus:outline-none focus:border-brand-500/50 transition-all w-64"
             />
           </div>
@@ -188,7 +136,7 @@ export default function Inventory() {
           <FilterDropdown
             label="Make"
             value={filterMake}
-            onChange={setFilterMake}
+            onChange={(v) => { setFilterMake(v); setPage(1); }}
             options={[{ value: 'All', label: 'All Makes' }, ...makes.map(m => ({ value: m, label: m }))]}
           />
         </div>
@@ -196,7 +144,7 @@ export default function Inventory() {
           <FilterDropdown
             label="Body Type"
             value={filterBody}
-            onChange={setFilterBody}
+            onChange={(v) => { setFilterBody(v); setPage(1); }}
             options={[{ value: 'All', label: 'All Body Styles' }, ...bodyStyles.map(b => ({ value: b, label: b }))]}
           />
         </div>
@@ -204,7 +152,7 @@ export default function Inventory() {
           <FilterDropdown
             label="Status"
             value={filterStatus}
-            onChange={setFilterStatus}
+            onChange={(v) => { setFilterStatus(v); setPage(1); }}
             options={[
               { value: 'All', label: 'All Status' },
               { value: 'available', label: 'Available' },
@@ -229,19 +177,25 @@ export default function Inventory() {
         </div>
       </div>
 
+      {!loading && totalFiltered > 0 && (
+        <p className="text-[10px] font-bold text-surface-500 uppercase tracking-widest">
+          Showing {(safePage - 1) * PER_PAGE + 1}–{Math.min(safePage * PER_PAGE, totalFiltered)} of {totalFiltered} vehicles
+        </p>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {loading ? (
           Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className="glass-card h-80 animate-pulse bg-surface-900/50" />
           ))
-        ) : vehicles.length === 0 ? (
+        ) : paginated.length === 0 ? (
           <div className="col-span-full py-20 text-center opacity-50">
             <CarFront size={48} className="mx-auto mb-4 text-surface-700" />
             <p className="text-sm font-bold text-surface-400 uppercase tracking-widest">No inventory found</p>
             <p className="text-xs text-surface-600 mt-2">Try importing vehicles via CLI</p>
           </div>
         ) : (
-          vehicles.map((v, idx) => (
+          paginated.map((v, idx) => (
             <motion.div
               key={v.vin}
               initial={{ opacity: 0, y: 20 }}
@@ -346,6 +300,47 @@ export default function Inventory() {
           ))
         )}
       </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-2">
+          <button
+            onClick={() => setPage(p => Math.max(1, p - 1))}
+            disabled={safePage === 1}
+            className="flex items-center gap-1 px-3 py-2 bg-surface-950/50 border border-surface-800/50 rounded-xl text-xs font-black uppercase tracking-widest text-surface-400 hover:text-white hover:border-brand-500/50 transition-all disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-surface-400 disabled:hover:border-surface-800/50"
+          >
+            <ChevronLeft size={14} />
+            Prev
+          </button>
+
+          {pageNumbers.map((n, i) =>
+            n === '...' ? (
+              <span key={`ellipsis-${i}`} className="px-2 text-surface-600 text-xs">...</span>
+            ) : (
+              <button
+                key={n}
+                onClick={() => setPage(n)}
+                className={`w-9 h-9 rounded-xl text-xs font-black uppercase transition-all ${
+                  n === safePage
+                    ? 'bg-brand-500 text-white shadow-glow-blue'
+                    : 'bg-surface-950/50 border border-surface-800/50 text-surface-400 hover:text-white hover:border-brand-500/50'
+                }`}
+              >
+                {n}
+              </button>
+            )
+          )}
+
+          <button
+            onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+            disabled={safePage === totalPages}
+            className="flex items-center gap-1 px-3 py-2 bg-surface-950/50 border border-surface-800/50 rounded-xl text-xs font-black uppercase tracking-widest text-surface-400 hover:text-white hover:border-brand-500/50 transition-all disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-surface-400 disabled:hover:border-surface-800/50"
+          >
+            Next
+            <ChevronRight size={14} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

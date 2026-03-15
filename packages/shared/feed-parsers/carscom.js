@@ -305,12 +305,11 @@ function parseHtml(html, feedUrl) {
   // Strategy 4: Generic HTML card scraping
   const scrapedVehicles = scrapeVehicleCards(html, feedUrl);
 
-  // Use the best available source — siteActivity has the most complete data
-  // (VIN, color, fuel type, drivetrain). Don't merge with liveView/HTML as
-  // they lack VINs and cause duplicates that can't be matched.
+  // siteActivity has the most complete structured data (VIN, color, fuel type,
+  // drivetrain) but no photo URLs — merge in photos from HTML card scraping.
   let vehicles;
   if (siteActivityVehicles.length > 0) {
-    vehicles = siteActivityVehicles;
+    vehicles = mergeVehicles(siteActivityVehicles, scrapedVehicles);
   } else if (jsonLdVehicles.length > 0) {
     vehicles = mergeVehicles(jsonLdVehicles, scrapedVehicles);
   } else if (liveViewVehicles.length > 0) {

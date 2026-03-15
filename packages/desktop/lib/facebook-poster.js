@@ -321,7 +321,8 @@ class FacebookPoster {
       console.log('[poster] Using residential proxy:', process.env.PROXY_URL);
     }
 
-    const { ensureChrome } = require('./chrome-path');
+    const { ensureChrome, killStaleProfileChrome } = require('./chrome-path');
+    await killStaleProfileChrome(CHROME_PROFILE_DIR);
     const executablePath = await ensureChrome({ onProgress: (msg) => this.log(msg) });
     this.log(`Launch config: headless=${this.headless} executablePath=${executablePath || 'bundled'}`);
 

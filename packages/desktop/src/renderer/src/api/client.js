@@ -217,7 +217,7 @@ export function getTeamStats() {
 }
 
 export async function getInventory({ signal } = {}) {
-  const data = await fetchJSON('/api/vehicles', { signal });
+  const data = await fetchJSON('/api/vehicles?hasPhotos=true', { signal });
   return {
     vehicles: (data.vehicles || []).map(toInventoryFormat),
     meta: { total: data.total || 0 },
@@ -226,8 +226,8 @@ export async function getInventory({ signal } = {}) {
 
 export async function getPostQueue({ signal } = {}) {
   const [unpostedRes, staleRes] = await Promise.all([
-    fetchJSON('/api/vehicles?fbPosted=false&status=ACTIVE', { signal }),
-    fetchJSON('/api/vehicles?fbPosted=true&fbStale=true&status=ACTIVE', { signal }),
+    fetchJSON('/api/vehicles?fbPosted=false&status=ACTIVE&hasPhotos=true', { signal }),
+    fetchJSON('/api/vehicles?fbPosted=true&fbStale=true&status=ACTIVE&hasPhotos=true', { signal }),
   ]);
   const unposted = (unpostedRes.vehicles || []).map(toInventoryFormat);
   const stale = (staleRes.vehicles || []).map(toInventoryFormat);

@@ -268,4 +268,39 @@ function getChromePath() {
   return findSystemChrome() || undefined;
 }
 
-module.exports = { getChromePath, ensureChrome };
+/**
+ * Kill stale Chrome processes that are using the AutoLander profile directory.
+ * This prevents "Failed to launch the browser process" errors caused by
+ * zombie Chrome processes holding the profile lock from previous sessions.
+ */
+async function killStaleProfileChrome(profileDir) {
+  if (process.platform !== 'win32') return; // Only needed on Windows
+  try {
+    const { execSync } = require('child_process');
+    const output = execSync(
+      'wmic process where "name=\'chrome.exe\'" get CommandLine,ProcessId /format:csv 2>nul',
+      { encoding: 'utf8', timeout: 10000 }
+    );
+    const normalizedProfile = profileDir.replace(/\//g, '\\').toLowerCase();
+    for (const line of output.split('\n')) {
+      if (!line.toLowerCase().includes(normalizedProfile)) continue;
+      const match = line.match(/(\d+)\s*$/);
+      if (match) {
+        const pid = match[1];
+        try {
+          process.kill(Number(pid));
+          console.log('[chrome-path] Killed stale Chrome PID', pid);
+        } catch (_) {}
+      }
+    }
+    // Remove lockfile after killing processes
+    const lockfile = path.join(profileDir, 'lockfile');
+    if (fs.existsSync(lockfile)) {
+      try { fs.unlinkSync(lockfile); } catch (_) {}
+    }
+  } catch (err) {
+    console.warn('[chrome-path] killStaleProfileChrome:', err.message);
+  }
+}
+
+module.exports = { getChromePath, ensureChrome, killStaleProfileChrome };

@@ -363,12 +363,26 @@ class FeedImageFetcher {
     });
   }
 
-  async loadSearchPage(page) {
+  async loadSearchPage(page, { retries = 3 } = {}) {
     this.ensureActive();
     this.currentSearchPage = page;
     const searchUrl = buildPaginatedUrl(this.feed.feedUrl, page);
-    await this.win.loadURL(searchUrl);
-    await this.waitForSearchPage();
+
+    for (let attempt = 1; attempt <= retries; attempt += 1) {
+      try {
+        await this.win.loadURL(searchUrl);
+        await this.waitForSearchPage();
+        return;
+      } catch (error) {
+        if (isStoppedError(error)) throw error;
+        if (attempt >= retries) throw error;
+        const backoff = RATE_LIMIT_MS * attempt;
+        console.warn(
+          `[feed-image-fetcher] Page ${page} load failed (attempt ${attempt}/${retries}): ${error.message} — retrying in ${backoff}ms`
+        );
+        await delay(backoff);
+      }
+    }
   }
 
   async waitForSearchPage() {
@@ -395,7 +409,17 @@ class FeedImageFetcher {
       this.ensureActive();
 
       if (page !== this.currentSearchPage) {
-        await this.loadSearchPage(page);
+        // Rate limit between search page loads to avoid anti-bot blocking
+        await delay(RATE_LIMIT_MS);
+        try {
+          await this.loadSearchPage(page);
+        } catch (error) {
+          if (isStoppedError(error)) throw error;
+          console.warn(
+            `[feed-image-fetcher] Skipping search page ${page}/${totalPages}: ${error.message}`
+          );
+          continue;
+        }
       }
 
       const listingIds = await this.executeJavaScript(SEARCH_PAGE_LISTINGS_JS);

@@ -45,6 +45,9 @@ module.exports = function createVehiclesRouter(prisma) {
     if (missingPhotos === 'true') {
       where.photos = { isEmpty: true };
     }
+    if (req.query.hasPhotos === 'true') {
+      where.photos = { isEmpty: false };
+    }
     if (req.query.fbPosted !== undefined) {
       where.fbPosted = req.query.fbPosted === 'true';
     }

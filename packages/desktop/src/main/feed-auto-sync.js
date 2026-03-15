@@ -3,6 +3,7 @@
 const { getMainWindow } = require('./window-manager');
 const { fetchFeedHtmlWithBrowser } = require('./ipc-handlers');
 const { enqueueFeedImageFetch, stopFeedImageFetch } = require('./feed-image-fetcher');
+const { startDripCrawler, stopDripCrawler } = require('./feed-drip-crawler');
 
 const AUTO_SYNC_INITIAL_DELAY_MS = 60_000;
 const AUTO_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -69,12 +70,16 @@ class FeedAutoSync {
       });
     }, AUTO_SYNC_INTERVAL_MS);
 
-    console.log('[feed-auto-sync] Started - initial sync in 60s, then every 6h');
+    // Start the background drip crawler for gradual photo fetching
+    startDripCrawler(serverUrl, accessToken);
+
+    console.log('[feed-auto-sync] Started - initial sync in 60s, then every 6h + drip crawler');
   }
 
   stop() {
     this.runToken += 1;
     stopFeedImageFetch();
+    stopDripCrawler();
 
     if (this.initialTimeoutId) {
       clearTimeout(this.initialTimeoutId);
@@ -174,11 +179,7 @@ class FeedAutoSync {
             feedCount,
           });
 
-          if (this.isActive(runToken) && isCarsComFeed(feed)) {
-            enqueueFeedImageFetch(this.serverUrl, this.accessToken, feed).catch((error) => {
-              console.error('[feed-image-fetcher] Error:', error.message);
-            });
-          }
+          // Drip crawler handles photo fetching in the background — no batch trigger needed
 
           totalVehicles += result.vehiclesFound || 0;
           totalAdded += result.vehiclesAdded || 0;
