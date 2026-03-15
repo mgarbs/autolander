@@ -53,3 +53,55 @@ export function getFeedAutoSyncDismissMs(event) {
   }
   return 0;
 }
+
+export function buildImageFetchMessage(event) {
+  if (!event?.type) return null;
+
+  switch (event.type) {
+    case 'image-fetch-start':
+      return {
+        type: 'info',
+        text: event.total > 0
+          ? `${event.feedName}: fetching photos for ${event.total} vehicles...`
+          : `${event.feedName}: no vehicles need photos.`,
+      };
+    case 'image-fetch-progress':
+      return {
+        type: 'info',
+        text: `${event.feedName}: photos ${event.current} of ${event.total} - ${event.vehicleName}`,
+      };
+    case 'image-fetch-complete':
+      return {
+        type: 'success',
+        text: `${event.feedName}: photo fetch complete (${event.updated} updated${event.skipped ? `, ${event.skipped} skipped` : ''})`,
+      };
+    case 'image-fetch-error':
+      return {
+        type: 'error',
+        text: `${event.feedName}: photo fetch failed - ${event.error}`,
+      };
+    case 'image-fetch-cancelled':
+      return {
+        type: 'info',
+        text: `${event.feedName}: photo fetch cancelled`,
+      };
+    default:
+      return null;
+  }
+}
+
+export function getSyncDismissMs(event) {
+  const autoSyncDismissMs = getFeedAutoSyncDismissMs(event);
+  if (autoSyncDismissMs > 0) return autoSyncDismissMs;
+
+  if (!event?.type) return 0;
+  if (
+    event.type === 'image-fetch-complete' ||
+    event.type === 'image-fetch-error' ||
+    event.type === 'image-fetch-cancelled'
+  ) {
+    return 10000;
+  }
+
+  return 0;
+}

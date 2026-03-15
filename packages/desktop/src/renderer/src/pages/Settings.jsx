@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getFbAuthStatus, deleteFbSession, getFeeds, createFeed, updateFeed, deleteFeed, clearFeedVehicles, syncFeed, syncFeedHtml, saveGmailConfig, getEmailStatus, getDealerContact, saveDealerContact } from '../api/client';
-import { buildFeedAutoSyncMessage, getFeedAutoSyncDismissMs } from '../lib/feed-auto-sync';
+import { clearSyncState, getSyncState, onSyncStateChange, setSyncState } from '../lib/sync-state';
 import {
   Settings as SettingsIcon,
   Facebook,
@@ -39,8 +39,8 @@ export default function Settings() {
   const [feedSaving, setFeedSaving] = useState(false);
   const [feedSyncing, setFeedSyncing] = useState(false);
   const [feedMsg, setFeedMsg] = useState(null);
-  const [autoSyncMsg, setAutoSyncMsg] = useState(null);
-  const autoSyncDismissRef = useRef(null);
+  const [currentSyncState, setCurrentSyncState] = useState(() => getSyncState());
+  const manualSyncDismissRef = useRef(null);
 
   // Email config state
   const [emailStatus, setEmailStatus] = useState(null);
@@ -99,40 +99,56 @@ export default function Settings() {
   }, []);
 
   useEffect(() => {
-    if (!window.autolander?.onFeedAutoSync) return undefined;
+    const unsubscribe = onSyncStateChange((nextState) => {
+      setCurrentSyncState(nextState);
 
-    const clearDismissTimer = () => {
-      if (autoSyncDismissRef.current) {
-        clearTimeout(autoSyncDismissRef.current);
-        autoSyncDismissRef.current = null;
-      }
-    };
-
-    const stopListening = window.autolander.onFeedAutoSync((event) => {
-      const message = buildFeedAutoSyncMessage(event);
-      if (!message) return;
-
-      clearDismissTimer();
-      setAutoSyncMsg(message);
-
-      if (event.type === 'auto-sync-complete') {
+      if (
+        nextState?.event?.type === 'auto-sync-complete' ||
+        nextState?.event?.type === 'image-fetch-complete' ||
+        nextState?.event?.type === 'manual-sync-complete'
+      ) {
         loadFeeds();
-      }
-
-      const dismissMs = getFeedAutoSyncDismissMs(event);
-      if (dismissMs > 0) {
-        autoSyncDismissRef.current = setTimeout(() => {
-          setAutoSyncMsg(null);
-          autoSyncDismissRef.current = null;
-        }, dismissMs);
       }
     });
 
     return () => {
-      clearDismissTimer();
-      stopListening();
+      unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (manualSyncDismissRef.current) {
+        clearTimeout(manualSyncDismissRef.current);
+        manualSyncDismissRef.current = null;
+      }
+    };
+  }, []);
+
+  const publishManualSyncState = (event, message, dismissMs = 0) => {
+    if (manualSyncDismissRef.current) {
+      clearTimeout(manualSyncDismissRef.current);
+      manualSyncDismissRef.current = null;
+    }
+
+    const nextState = {
+      id: `${Date.now()}-${Math.random()}`,
+      source: 'manual-sync',
+      event,
+      message,
+    };
+
+    setSyncState(nextState);
+
+    if (dismissMs > 0) {
+      manualSyncDismissRef.current = setTimeout(() => {
+        if (getSyncState()?.id === nextState.id) {
+          clearSyncState();
+        }
+        manualSyncDismissRef.current = null;
+      }, dismissMs);
+    }
+  };
 
   const handleDisconnect = async () => {
     if (!confirm('Disconnect Facebook Account? This will halt automated postings.')) return;
@@ -178,6 +194,9 @@ export default function Settings() {
         });
 
         if (urlChanged) {
+          if (window.autolander?.stopFeedImageFetch) {
+            await window.autolander.stopFeedImageFetch(activeFeed.id).catch(() => {});
+          }
           await clearFeedVehicles(activeFeed.id);
           setFeedMsg({ type: 'info', text: 'Feed updated. Old inventory cleared. Syncing new feed...' });
         } else {
@@ -216,7 +235,10 @@ export default function Settings() {
     const feed = feedOverride || activeFeed;
     if (!feed) return;
     setFeedSyncing(true);
-    setFeedMsg({ type: 'info', text: 'Syncing inventory...' });
+    publishManualSyncState(
+      { type: 'manual-sync-start', feedId: feed.id },
+      { type: 'info', text: 'Syncing inventory...' }
+    );
     let stopFeedSyncProgress = null;
     try {
       let result;
@@ -234,11 +256,17 @@ export default function Settings() {
         if (window.autolander?.onFeedSyncProgress) {
           stopFeedSyncProgress = window.autolander.onFeedSyncProgress((data) => {
             if (!data?.page || !data?.totalPages) return;
-            setFeedMsg({ type: 'info', text: `Loading page ${data.page} of ${data.totalPages}...` });
+            publishManualSyncState(
+              { type: 'manual-sync-page', feedId: feed.id, page: data.page, totalPages: data.totalPages },
+              { type: 'info', text: `Loading page ${data.page} of ${data.totalPages}...` }
+            );
           });
         }
 
-        setFeedMsg({ type: 'info', text: 'Loading dealer page in browser...' });
+        publishManualSyncState(
+          { type: 'manual-sync-browser', feedId: feed.id },
+          { type: 'info', text: 'Loading dealer page in browser...' }
+        );
 
         const fetchResult = await window.autolander.fetchFeedHtml(feed.feedUrl);
 
@@ -246,7 +274,10 @@ export default function Settings() {
           throw new Error(fetchResult.error || 'Failed to load dealer page');
         }
 
-        setFeedMsg({ type: 'info', text: 'Parsing inventory data...' });
+        publishManualSyncState(
+          { type: 'manual-sync-parse', feedId: feed.id },
+          { type: 'info', text: 'Parsing inventory data...' }
+        );
 
         // Send the HTML to the cloud API for parsing and sync
         result = await syncFeedHtml(feed.id, fetchResult.html);
@@ -257,9 +288,24 @@ export default function Settings() {
 
       await loadFeeds();
       const msg = `Sync complete: ${result.vehiclesFound} found, ${result.vehiclesAdded} added, ${result.vehiclesUpdated} updated`;
-      setFeedMsg({ type: 'success', text: msg });
+      publishManualSyncState(
+        { type: 'manual-sync-complete', feedId: feed.id, result },
+        { type: 'success', text: msg },
+        10000
+      );
+
+      if (
+        window.autolander?.fetchFeedImages &&
+        (feed.feedType === 'CARSCOM' || feed.feedUrl?.toLowerCase().includes('cars.com'))
+      ) {
+        window.autolander.fetchFeedImages(feed).catch(() => {});
+      }
     } catch (e) {
-      setFeedMsg({ type: 'error', text: 'Sync failed: ' + e.message });
+      publishManualSyncState(
+        { type: 'manual-sync-error', feedId: feed.id, error: e.message },
+        { type: 'error', text: 'Sync failed: ' + e.message },
+        10000
+      );
     } finally {
       if (typeof stopFeedSyncProgress === 'function') stopFeedSyncProgress();
       setFeedSyncing(false);
@@ -449,16 +495,16 @@ export default function Settings() {
         </div>
 
         <div className="p-6 space-y-6">
-          {autoSyncMsg && (
+          {currentSyncState?.message && (
             <div className={`flex items-center gap-2 p-3 rounded-xl text-xs font-bold uppercase tracking-widest ${
-              autoSyncMsg.type === 'success'
+              currentSyncState.message.type === 'success'
                 ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
-                : autoSyncMsg.type === 'info'
+                : currentSyncState.message.type === 'info'
                 ? 'bg-blue-500/10 border border-blue-500/20 text-blue-400'
                 : 'bg-rose-500/10 border border-rose-500/20 text-rose-400'
             }`}>
-              {autoSyncMsg.type === 'success' ? <CheckCircle size={14} /> : autoSyncMsg.type === 'info' ? <RefreshCw size={14} className="animate-spin" /> : <AlertCircle size={14} />}
-              {autoSyncMsg.text}
+              {currentSyncState.message.type === 'success' ? <CheckCircle size={14} /> : currentSyncState.message.type === 'info' ? <RefreshCw size={14} className="animate-spin" /> : <AlertCircle size={14} />}
+              {currentSyncState.message.text}
             </div>
           )}
 

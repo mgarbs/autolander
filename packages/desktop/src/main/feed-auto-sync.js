@@ -2,6 +2,7 @@
 
 const { getMainWindow } = require('./window-manager');
 const { fetchFeedHtmlWithBrowser } = require('./ipc-handlers');
+const { enqueueFeedImageFetch, stopFeedImageFetch } = require('./feed-image-fetcher');
 
 const AUTO_SYNC_INITIAL_DELAY_MS = 60_000;
 const AUTO_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -22,6 +23,11 @@ function isBrowserProtectedFeed(feed) {
       feedUrl.includes('cargurus.com')
     )
   );
+}
+
+function isCarsComFeed(feed) {
+  const feedUrl = typeof feed?.feedUrl === 'string' ? feed.feedUrl.toLowerCase() : '';
+  return feed?.feedType === 'CARSCOM' || feedUrl.includes('cars.com');
 }
 
 function getFeedName(feed) {
@@ -68,6 +74,7 @@ class FeedAutoSync {
 
   stop() {
     this.runToken += 1;
+    stopFeedImageFetch();
 
     if (this.initialTimeoutId) {
       clearTimeout(this.initialTimeoutId);
@@ -166,6 +173,12 @@ class FeedAutoSync {
             feedIndex,
             feedCount,
           });
+
+          if (this.isActive(runToken) && isCarsComFeed(feed)) {
+            enqueueFeedImageFetch(this.serverUrl, this.accessToken, feed).catch((error) => {
+              console.error('[feed-image-fetcher] Error:', error.message);
+            });
+          }
 
           totalVehicles += result.vehiclesFound || 0;
           totalAdded += result.vehiclesAdded || 0;

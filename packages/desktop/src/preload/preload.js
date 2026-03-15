@@ -4,6 +4,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('autolander', {
   fetchFeedHtml: (url) => ipcRenderer.invoke('feed:fetch-html', url),
+  fetchFeedImages: (feed) => ipcRenderer.invoke('feed:fetch-images', feed),
+  stopFeedImageFetch: (feedId) => ipcRenderer.invoke('feed:stop-image-fetch', feedId),
   onFeedSyncProgress: (cb) => {
     const listener = (_event, data) => cb(data);
     ipcRenderer.on('feed:sync-progress', listener);
@@ -13,6 +15,11 @@ contextBridge.exposeInMainWorld('autolander', {
     const listener = (_event, data) => cb(data);
     ipcRenderer.on('feed:auto-sync', listener);
     return () => ipcRenderer.removeListener('feed:auto-sync', listener);
+  },
+  onImageFetchProgress: (cb) => {
+    const listener = (_event, data) => cb(data);
+    ipcRenderer.on('feed:image-fetch', listener);
+    return () => ipcRenderer.removeListener('feed:image-fetch', listener);
   },
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 

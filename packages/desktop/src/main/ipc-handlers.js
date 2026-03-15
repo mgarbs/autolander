@@ -4,6 +4,7 @@ const path = require('path');
 const os = require('os');
 const { BrowserWindow, shell } = require('electron');
 const { getMainWindow } = require('./window-manager');
+const { enqueueFeedImageFetch, stopFeedImageFetch } = require('./feed-image-fetcher');
 
 // Worker modules (lazy-loaded)
 let agentClient = null;
@@ -74,6 +75,11 @@ function getIpcFbInboxAdapter() {
 
 function asErrorResult(error) {
   return { error: error && error.message ? error.message : 'Unknown error' };
+}
+
+function isCarsComFeed(feed) {
+  const feedUrl = typeof feed?.feedUrl === 'string' ? feed.feedUrl.toLowerCase() : '';
+  return feed?.feedType === 'CARSCOM' || feedUrl.includes('cars.com');
 }
 
 function sendAgentStatus(status) {
@@ -386,6 +392,7 @@ function registerIpcHandlers(ipcMain) {
     if (feedAutoSync) {
       feedAutoSync.stop();
     }
+    stopFeedImageFetch();
     return { disconnected: true };
   });
 
@@ -547,6 +554,28 @@ function registerIpcHandlers(ipcMain) {
     try { const { markManualSync } = require('./feed-auto-sync'); markManualSync(); } catch {}
     return fetchFeedHtmlWithBrowser(url);
   });
+
+  ipcMain.handle('feed:fetch-images', async (_event, feed) => {
+    if (!agentCredentials.serverUrl || !agentCredentials.accessToken) {
+      return { queued: false, error: 'Missing API credentials' };
+    }
+
+    if (!isCarsComFeed(feed)) {
+      return { queued: false, skipped: true, reason: 'unsupported-feed' };
+    }
+
+    enqueueFeedImageFetch(agentCredentials.serverUrl, agentCredentials.accessToken, feed)
+      .catch((error) => {
+        console.error('[feed-image-fetcher] Error:', error.message);
+      });
+
+    return { queued: true };
+  });
+
+  ipcMain.handle('feed:stop-image-fetch', async (_event, feedId) => {
+    stopFeedImageFetch(feedId || undefined);
+    return { stopped: true };
+  });
 }
 
 async function cleanupAdapters() {
@@ -576,6 +605,7 @@ async function cleanupAdapters() {
   if (feedAutoSync) {
     feedAutoSync.stop();
   }
+  stopFeedImageFetch();
   if (agentClient) {
     agentClient.disconnect();
   }

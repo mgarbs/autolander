@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useInventory } from '../hooks/useInventory';
 import { useRealtime } from '../context/RealtimeContext';
 import { markVehicleSold } from '../api/client';
-import { buildFeedAutoSyncMessage, getFeedAutoSyncDismissMs } from '../lib/feed-auto-sync';
+import { getSyncState, onSyncStateChange } from '../lib/sync-state';
 import Badge from '../components/Badge';
 import FilterDropdown from '../components/FilterDropdown';
 import { 
@@ -29,13 +29,12 @@ export default function Inventory() {
   const { inventory, loading, refresh } = useInventory();
   const { lastEvents } = useRealtime();
   const [showRefreshBanner, setShowRefreshBanner] = useState(false);
-  const [autoSyncMsg, setAutoSyncMsg] = useState(null);
+  const [currentSyncState, setCurrentSyncState] = useState(() => getSyncState());
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMake, setFilterMake] = useState('All');
   const [filterBody, setFilterBody] = useState('All');
   const [filterStatus, setFilterStatus] = useState('All');
   const [sortBy, setSortBy] = useState('price-asc');
-  const autoSyncDismissRef = useRef(null);
 
   useEffect(() => {
     if (lastEvents.inventory) {
@@ -44,38 +43,20 @@ export default function Inventory() {
   }, [lastEvents.inventory]);
 
   useEffect(() => {
-    if (!window.autolander?.onFeedAutoSync) return undefined;
+    const unsubscribe = onSyncStateChange((nextState) => {
+      setCurrentSyncState(nextState);
 
-    const clearDismissTimer = () => {
-      if (autoSyncDismissRef.current) {
-        clearTimeout(autoSyncDismissRef.current);
-        autoSyncDismissRef.current = null;
-      }
-    };
-
-    const stopListening = window.autolander.onFeedAutoSync((event) => {
-      const message = buildFeedAutoSyncMessage(event);
-      if (!message) return;
-
-      clearDismissTimer();
-      setAutoSyncMsg(message);
-
-      if (event.type === 'auto-sync-complete') {
+      if (
+        nextState?.event?.type === 'auto-sync-complete' ||
+        nextState?.event?.type === 'image-fetch-complete' ||
+        nextState?.event?.type === 'manual-sync-complete'
+      ) {
         setShowRefreshBanner(true);
-      }
-
-      const dismissMs = getFeedAutoSyncDismissMs(event);
-      if (dismissMs > 0) {
-        autoSyncDismissRef.current = setTimeout(() => {
-          setAutoSyncMsg(null);
-          autoSyncDismissRef.current = null;
-        }, dismissMs);
       }
     });
 
     return () => {
-      clearDismissTimer();
-      stopListening();
+      unsubscribe();
     };
   }, []);
 
@@ -139,16 +120,16 @@ export default function Inventory() {
 
   return (
     <div className="space-y-8 pb-12">
-      {autoSyncMsg && (
+      {currentSyncState?.message && (
         <div className={`flex items-center gap-2 p-3 rounded-2xl text-xs font-bold uppercase tracking-widest ${
-          autoSyncMsg.type === 'success'
+          currentSyncState.message.type === 'success'
             ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
-            : autoSyncMsg.type === 'info'
+            : currentSyncState.message.type === 'info'
             ? 'bg-blue-500/10 border border-blue-500/20 text-blue-400'
             : 'bg-rose-500/10 border border-rose-500/20 text-rose-400'
         }`}>
-          {autoSyncMsg.type === 'success' ? <Zap size={14} /> : autoSyncMsg.type === 'info' ? <RefreshCw size={14} className="animate-spin" /> : <AlertCircle size={14} />}
-          {autoSyncMsg.text}
+          {currentSyncState.message.type === 'success' ? <Zap size={14} /> : currentSyncState.message.type === 'info' ? <RefreshCw size={14} className="animate-spin" /> : <AlertCircle size={14} />}
+          {currentSyncState.message.text}
         </div>
       )}
 

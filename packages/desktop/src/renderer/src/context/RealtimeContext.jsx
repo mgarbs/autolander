@@ -1,8 +1,9 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { wsClient } from '../api/ws-client';
 import { getBaseUrl } from '../api/client';
 import { useAuth } from './AuthContext';
-import { buildFeedAutoSyncMessage } from '../lib/feed-auto-sync';
+import { buildFeedAutoSyncMessage, buildImageFetchMessage, getSyncDismissMs } from '../lib/feed-auto-sync';
+import { clearSyncState, getSyncState, setSyncState } from '../lib/sync-state';
 
 const RealtimeContext = createContext(null);
 
@@ -16,6 +17,7 @@ export function RealtimeProvider({ children }) {
     agent: null,
   });
   const [notification, setNotification] = useState(null);
+  const syncDismissRef = useRef(null);
 
   const showNotification = (message, type = 'info') => {
     const id = Date.now();
@@ -23,6 +25,13 @@ export function RealtimeProvider({ children }) {
     setTimeout(() => {
       setNotification(prev => prev?.id === id ? null : prev);
     }, 5000);
+  };
+
+  const clearSyncDismiss = () => {
+    if (syncDismissRef.current) {
+      clearTimeout(syncDismissRef.current);
+      syncDismissRef.current = null;
+    }
   };
 
   useEffect(() => {
@@ -71,18 +80,65 @@ export function RealtimeProvider({ children }) {
   }, [user]);
 
   useEffect(() => {
-    if (!window.autolander?.onFeedAutoSync) return undefined;
+    if (user) return;
+    clearSyncDismiss();
+    clearSyncState();
+  }, [user]);
 
-    const stopListening = window.autolander.onFeedAutoSync((event) => {
-      if (event?.type !== 'auto-sync-complete') return;
-      const message = buildFeedAutoSyncMessage(event);
-      if (message?.text) {
+  useEffect(() => {
+    if (!window.autolander?.onFeedAutoSync && !window.autolander?.onImageFetchProgress) {
+      return undefined;
+    }
+
+    const publishSyncState = (source, event, buildMessage) => {
+      const message = buildMessage(event);
+      if (!message) return;
+
+      clearSyncDismiss();
+
+      const nextState = {
+        id: `${Date.now()}-${Math.random()}`,
+        source,
+        event,
+        message,
+      };
+
+      setSyncState(nextState);
+
+      if (
+        (event?.type === 'auto-sync-complete' || event?.type === 'image-fetch-complete') &&
+        message?.text
+      ) {
         showNotification(message.text, 'success');
       }
-    });
+
+      const dismissMs = getSyncDismissMs(event);
+      if (dismissMs > 0) {
+        syncDismissRef.current = setTimeout(() => {
+          if (getSyncState()?.id === nextState.id) {
+            clearSyncState();
+          }
+          syncDismissRef.current = null;
+        }, dismissMs);
+      }
+    };
+
+    const stopAutoSync = window.autolander?.onFeedAutoSync
+      ? window.autolander.onFeedAutoSync((event) => {
+          publishSyncState('auto-sync', event, buildFeedAutoSyncMessage);
+        })
+      : () => {};
+
+    const stopImageFetch = window.autolander?.onImageFetchProgress
+      ? window.autolander.onImageFetchProgress((event) => {
+          publishSyncState('image-fetch', event, buildImageFetchMessage);
+        })
+      : () => {};
 
     return () => {
-      stopListening();
+      clearSyncDismiss();
+      stopAutoSync();
+      stopImageFetch();
     };
   }, []);
 
