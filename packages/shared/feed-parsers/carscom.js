@@ -201,15 +201,126 @@ function mergeVehicles(primaryVehicles, supplementalVehicles) {
   return merged;
 }
 
+// Cars.com Phoenix LiveView: extract vehicles from data-site-activity vehicleArray
+function parseSiteActivityVehicles(html, feedUrl) {
+  const $ = cheerio.load(html);
+  const vehicles = [];
+
+  $('[data-site-activity]').each((_, el) => {
+    const raw = $(el).attr('data-site-activity');
+    if (!raw) return;
+
+    let data;
+    try {
+      const decoded = raw.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+      data = JSON.parse(decoded);
+    } catch {
+      return;
+    }
+
+    const arr = data.vehicleArray;
+    if (!Array.isArray(arr)) return;
+
+    for (const item of arr) {
+      const vehicle = createEmptyVehicle();
+      vehicle.vin = normalizeVin(item.vin);
+      vehicle.year = normalizeYear(item.year);
+      vehicle.make = cleanText(item.make);
+      vehicle.model = cleanText(item.model);
+      vehicle.trim = cleanText(item.trim);
+      vehicle.price = normalizePrice(item.price);
+      vehicle.mileage = normalizeMileage(item.mileage);
+      vehicle.color = cleanText(item.exterior_color);
+      vehicle.bodyStyle = cleanText(item.bodystyle);
+      vehicle.fuelType = cleanText(item.fuel_type);
+      vehicle.transmission = cleanText(item.drivetrain);
+      vehicle.condition = cleanText(item.stock_type);
+      vehicle.description = cleanText(
+        `${item.year || ''} ${item.make || ''} ${item.model || ''} ${item.trim || ''}`.trim()
+      );
+      vehicle.dealerUrl = item.listing_id
+        ? resolveUrl(`/vehicledetail/${item.listing_id}/`, CARSCOM_BASE_URL)
+        : feedUrl;
+      // No photos on search results page — photo_count tells us they exist on detail pages
+      vehicle.photos = [];
+      if (hasRequiredFields(vehicle)) vehicles.push(vehicle);
+    }
+  });
+
+  return dedupe(vehicles);
+}
+
+// Extract additional vehicle data from shop-card-link elements and title/price/mileage
+function parseLiveViewCards(html, feedUrl) {
+  const $ = cheerio.load(html);
+  const vehicles = [];
+
+  $('a.shop-card-link[data-override-payload]').each((_, el) => {
+    const node = $(el);
+    let payload;
+    try {
+      const raw = node.attr('data-override-payload');
+      payload = JSON.parse(raw.replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+    } catch {
+      return;
+    }
+
+    const vehicle = createEmptyVehicle();
+    vehicle.year = normalizeYear(payload.model_year || payload.year);
+    vehicle.make = cleanText(payload.make);
+    vehicle.model = cleanText(payload.model);
+    vehicle.trim = cleanText(payload.trim);
+    vehicle.price = normalizePrice(payload.price);
+    vehicle.bodyStyle = cleanText(payload.bodystyle);
+    vehicle.condition = cleanText(payload.stock_type);
+    vehicle.dealerUrl = node.attr('href')
+      ? resolveUrl(node.attr('href'), CARSCOM_BASE_URL)
+      : feedUrl;
+
+    // Get title and mileage from sibling elements
+    const parent = node.closest('[data-phx-id]').length ? node.closest('[data-phx-id]') : node.parent();
+    const title = parent.find('[data-qa="title"]').text().trim();
+    if (title && !vehicle.description) vehicle.description = cleanText(title);
+    const mileage = parent.find('[data-qa="mileage"]').text().trim();
+    if (mileage) vehicle.mileage = normalizeMileage(mileage);
+
+    if (hasRequiredFields(vehicle)) vehicles.push(vehicle);
+  });
+
+  return dedupe(vehicles);
+}
+
 function parseHtml(html, feedUrl) {
   if (!html) return [];
 
+  // Strategy 1: Extract from data-site-activity vehicleArray (best data source)
+  const siteActivityVehicles = parseSiteActivityVehicles(html, feedUrl);
+
+  // Strategy 2: JSON-LD (usually only AutoDealer, not vehicles — but try anyway)
   const jsonLdVehicles = parseJsonLdVehicles(html, feedUrl);
+
+  // Strategy 3: LiveView card links with data-override-payload
+  const liveViewVehicles = parseLiveViewCards(html, feedUrl);
+
+  // Strategy 4: Generic HTML card scraping
   const scrapedVehicles = scrapeVehicleCards(html, feedUrl);
-  const vehicles = mergeVehicles(jsonLdVehicles, scrapedVehicles);
+
+  // Use the best available source — siteActivity has the most complete data
+  // (VIN, color, fuel type, drivetrain). Don't merge with liveView/HTML as
+  // they lack VINs and cause duplicates that can't be matched.
+  let vehicles;
+  if (siteActivityVehicles.length > 0) {
+    vehicles = siteActivityVehicles;
+  } else if (jsonLdVehicles.length > 0) {
+    vehicles = mergeVehicles(jsonLdVehicles, scrapedVehicles);
+  } else if (liveViewVehicles.length > 0) {
+    vehicles = mergeVehicles(liveViewVehicles, scrapedVehicles);
+  } else {
+    vehicles = scrapedVehicles;
+  }
 
   console.log(
-    `${LOG_PREFIX} extracted ${jsonLdVehicles.length} vehicles via JSON-LD, ${scrapedVehicles.length} via HTML, merged ${vehicles.length}`
+    `${LOG_PREFIX} extracted: siteActivity=${siteActivityVehicles.length}, jsonLd=${jsonLdVehicles.length}, liveView=${liveViewVehicles.length}, htmlCards=${scrapedVehicles.length}, merged=${vehicles.length}`
   );
   return vehicles;
 }

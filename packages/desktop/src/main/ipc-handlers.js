@@ -95,20 +95,26 @@ const FEED_FETCH_PAGE_DELAY_MS = 2000;
 const FEED_FETCH_MAX_PAGES = 50;
 const FEED_FETCH_PAGINATION_JS = `
   (function() {
-    const pageLinks = document.querySelectorAll(
-      '.sds-pagination a[href*="page="], .pagination a[href*="page="], nav a[href*="page="]'
-    );
-    let maxPage = 1;
-    pageLinks.forEach((a) => {
-      const match = a.href.match(/[?&]page=(\\d+)/);
-      if (match) maxPage = Math.max(maxPage, parseInt(match[1], 10));
+    var maxPage = 1;
+    // Strategy 1: Cars.com Phoenix LiveView pagination links (id="pagination-direct-link-N")
+    document.querySelectorAll('a[id^="pagination-direct-link-"]').forEach(function(a) {
+      var m = a.id.match(/pagination-direct-link-(\\d+)/);
+      if (m) maxPage = Math.max(maxPage, parseInt(m[1], 10));
     });
-    const pageNums = document.querySelectorAll(
-      '.sds-pagination__item, .pagination li, nav[aria-label*="pagination"] li'
-    );
-    pageNums.forEach((el) => {
-      const num = parseInt(el.textContent.trim(), 10);
-      if (!Number.isNaN(num) && num > maxPage) maxPage = num;
+    // Strategy 2: phx-value-page attributes (Phoenix LiveView)
+    document.querySelectorAll('[phx-value-page]').forEach(function(el) {
+      var num = parseInt(el.getAttribute('phx-value-page'), 10);
+      if (!isNaN(num)) maxPage = Math.max(maxPage, num);
+    });
+    // Strategy 3: Any href with page= parameter
+    document.querySelectorAll('a[href*="page="]').forEach(function(a) {
+      var m = a.href.match(/[?&]page=(\\d+)/);
+      if (m) maxPage = Math.max(maxPage, parseInt(m[1], 10));
+    });
+    // Strategy 4: Pagination list items with just numbers
+    document.querySelectorAll('.sds-pagination__item, .pagination li, nav li').forEach(function(el) {
+      var num = parseInt(el.textContent.trim(), 10);
+      if (!isNaN(num) && num > 0) maxPage = Math.max(maxPage, num);
     });
     return maxPage;
   })()
