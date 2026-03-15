@@ -5,6 +5,12 @@ const { fetchFeedHtmlWithBrowser } = require('./ipc-handlers');
 
 const AUTO_SYNC_INITIAL_DELAY_MS = 60_000;
 const AUTO_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const AUTO_SYNC_SKIP_IF_RECENT_MS = 5 * 60 * 1000; // Skip if synced in last 5 min
+
+// Shared flag — manual sync sets this so auto-sync knows to skip
+let lastManualSyncAt = 0;
+function markManualSync() { lastManualSyncAt = Date.now(); }
+function recentManualSync() { return (Date.now() - lastManualSyncAt) < AUTO_SYNC_SKIP_IF_RECENT_MS; }
 const BROWSER_FEED_TYPES = new Set(['CARSCOM', 'CARGURUS']);
 
 function isBrowserProtectedFeed(feed) {
@@ -101,6 +107,11 @@ class FeedAutoSync {
 
     if (!this.isActive(runToken)) {
       console.log('[feed-auto-sync] No active credentials, skipping cycle');
+      return;
+    }
+
+    if (recentManualSync()) {
+      console.log('[feed-auto-sync] Manual sync was recent, skipping cycle');
       return;
     }
 
@@ -260,4 +271,4 @@ class FeedAutoSync {
   }
 }
 
-module.exports = { FeedAutoSync };
+module.exports = { FeedAutoSync, markManualSync };

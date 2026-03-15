@@ -111,10 +111,13 @@ const FEED_FETCH_PAGINATION_JS = `
       var m = a.href.match(/[?&]page=(\\d+)/);
       if (m) maxPage = Math.max(maxPage, parseInt(m[1], 10));
     });
-    // Strategy 4: Pagination list items with just numbers
-    document.querySelectorAll('.sds-pagination__item, .pagination li, nav li').forEach(function(el) {
-      var num = parseInt(el.textContent.trim(), 10);
-      if (!isNaN(num) && num > 0) maxPage = Math.max(maxPage, num);
+    // Strategy 4: Pagination list items with just numbers (avoid nav menus)
+    document.querySelectorAll('.sds-pagination__item, .pagination li').forEach(function(el) {
+      var text = el.textContent.trim();
+      if (text.length <= 3) {
+        var num = parseInt(text, 10);
+        if (!isNaN(num) && num > 0) maxPage = Math.max(maxPage, num);
+      }
     });
     return maxPage;
   })()
@@ -540,6 +543,8 @@ function registerIpcHandlers(ipcMain) {
   });
 
   ipcMain.handle('feed:fetch-html', async (_event, url) => {
+    // Mark as manual sync so auto-sync doesn't overlap
+    try { const { markManualSync } = require('./feed-auto-sync'); markManualSync(); } catch {}
     return fetchFeedHtmlWithBrowser(url);
   });
 }
