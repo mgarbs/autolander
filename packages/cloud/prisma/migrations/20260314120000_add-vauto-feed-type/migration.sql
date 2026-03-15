@@ -1,0 +1,1 @@
+ALTER TYPE "FeedType" ADD VALUE 'VAUTO';

@@ -225,17 +225,12 @@ async function processVehicles(feed, parsedVehicles, prisma) {
         },
         data: { status: 'ARCHIVED' },
       });
-    } else {
-      await prisma.vehicle.updateMany({
-        where: {
-          orgId: feed.orgId,
-          feedId: feed.id,
-          status: { not: 'ARCHIVED' },
-          fbPosted: true,
-        },
-        data: { status: 'ARCHIVED' },
-      });
     }
+    // When 0 vehicles are found, do NOT archive existing inventory.
+    // A zero-result sync is almost certainly a fetch failure (403, bot block,
+    // network error), not "dealer removed all vehicles." Archiving here would
+    // wipe the entire inventory every time the cron runs against a
+    // bot-protected site like Cars.com or CarGurus.
 
     await prisma.inventoryFeed.update({
       where: { id: feed.id },

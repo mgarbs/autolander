@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getFbAuthStatus, deleteFbSession, getFeeds, createFeed, syncFeed, syncFeedHtml, saveGmailConfig, getEmailStatus, getDealerContact, saveDealerContact } from '../api/client';
+import { buildFeedAutoSyncMessage, getFeedAutoSyncDismissMs } from '../lib/feed-auto-sync';
 import {
   Settings as SettingsIcon,
   Facebook,
@@ -38,6 +39,8 @@ export default function Settings() {
   const [feedSaving, setFeedSaving] = useState(false);
   const [feedSyncing, setFeedSyncing] = useState(false);
   const [feedMsg, setFeedMsg] = useState(null);
+  const [autoSyncMsg, setAutoSyncMsg] = useState(null);
+  const autoSyncDismissRef = useRef(null);
 
   // Email config state
   const [emailStatus, setEmailStatus] = useState(null);
@@ -92,6 +95,42 @@ export default function Settings() {
     loadDealerContact();
   }, []);
 
+  useEffect(() => {
+    if (!window.autolander?.onFeedAutoSync) return undefined;
+
+    const clearDismissTimer = () => {
+      if (autoSyncDismissRef.current) {
+        clearTimeout(autoSyncDismissRef.current);
+        autoSyncDismissRef.current = null;
+      }
+    };
+
+    const stopListening = window.autolander.onFeedAutoSync((event) => {
+      const message = buildFeedAutoSyncMessage(event);
+      if (!message) return;
+
+      clearDismissTimer();
+      setAutoSyncMsg(message);
+
+      if (event.type === 'auto-sync-complete') {
+        loadFeeds();
+      }
+
+      const dismissMs = getFeedAutoSyncDismissMs(event);
+      if (dismissMs > 0) {
+        autoSyncDismissRef.current = setTimeout(() => {
+          setAutoSyncMsg(null);
+          autoSyncDismissRef.current = null;
+        }, dismissMs);
+      }
+    });
+
+    return () => {
+      clearDismissTimer();
+      stopListening();
+    };
+  }, []);
+
   const handleDisconnect = async () => {
     if (!confirm('Disconnect Facebook Account? This will halt automated postings.')) return;
     setDisconnecting(true);
@@ -125,14 +164,27 @@ export default function Settings() {
     if (!activeFeed) return;
     setFeedSyncing(true);
     setFeedMsg({ type: 'info', text: 'Syncing inventory...' });
+    let stopFeedSyncProgress = null;
     try {
       let result;
 
-      // For CarGurus feeds, use Electron's hidden browser to fetch HTML first
-      const isCargurus = activeFeed.feedType === 'CARGURUS' ||
-        (activeFeed.feedUrl && activeFeed.feedUrl.includes('cargurus.com'));
+      // For bot-protected feeds, use Electron's hidden browser to fetch HTML first.
+      const needsBrowserFetch =
+        activeFeed.feedType === 'CARGURUS' ||
+        activeFeed.feedType === 'CARSCOM' ||
+        (activeFeed.feedUrl && (
+          activeFeed.feedUrl.includes('cargurus.com') ||
+          activeFeed.feedUrl.includes('cars.com')
+        ));
 
-      if (isCargurus && window.autolander?.fetchFeedHtml) {
+      if (needsBrowserFetch && window.autolander?.fetchFeedHtml) {
+        if (window.autolander?.onFeedSyncProgress) {
+          stopFeedSyncProgress = window.autolander.onFeedSyncProgress((data) => {
+            if (!data?.page || !data?.totalPages) return;
+            setFeedMsg({ type: 'info', text: `Loading page ${data.page} of ${data.totalPages}...` });
+          });
+        }
+
         setFeedMsg({ type: 'info', text: 'Loading dealer page in browser...' });
 
         const fetchResult = await window.autolander.fetchFeedHtml(activeFeed.feedUrl);
@@ -146,7 +198,7 @@ export default function Settings() {
         // Send the HTML to the cloud API for parsing and sync
         result = await syncFeedHtml(activeFeed.id, fetchResult.html);
       } else {
-        // For non-CarGurus feeds, use the normal server-side sync
+        // For non-browser feeds, use the normal server-side sync
         result = await syncFeed(activeFeed.id);
       }
 
@@ -156,6 +208,7 @@ export default function Settings() {
     } catch (e) {
       setFeedMsg({ type: 'error', text: 'Sync failed: ' + e.message });
     } finally {
+      if (typeof stopFeedSyncProgress === 'function') stopFeedSyncProgress();
       setFeedSyncing(false);
     }
   };
@@ -343,6 +396,19 @@ export default function Settings() {
         </div>
 
         <div className="p-6 space-y-6">
+          {autoSyncMsg && (
+            <div className={`flex items-center gap-2 p-3 rounded-xl text-xs font-bold uppercase tracking-widest ${
+              autoSyncMsg.type === 'success'
+                ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
+                : autoSyncMsg.type === 'info'
+                ? 'bg-blue-500/10 border border-blue-500/20 text-blue-400'
+                : 'bg-rose-500/10 border border-rose-500/20 text-rose-400'
+            }`}>
+              {autoSyncMsg.type === 'success' ? <CheckCircle size={14} /> : autoSyncMsg.type === 'info' ? <RefreshCw size={14} className="animate-spin" /> : <AlertCircle size={14} />}
+              {autoSyncMsg.text}
+            </div>
+          )}
+
           {/* Feed URL */}
           <div className="space-y-2">
             <label className="text-[10px] font-bold text-surface-500 uppercase tracking-widest">Feed URL</label>

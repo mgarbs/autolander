@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useInventory } from '../hooks/useInventory';
 import { useRealtime } from '../context/RealtimeContext';
+import { markVehicleSold } from '../api/client';
+import { buildFeedAutoSyncMessage, getFeedAutoSyncDismissMs } from '../lib/feed-auto-sync';
 import Badge from '../components/Badge';
 import FilterDropdown from '../components/FilterDropdown';
 import { 
@@ -13,7 +15,8 @@ import {
   Zap,
   Tag,
   Share2,
-  RefreshCw
+  RefreshCw,
+  AlertCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -26,11 +29,13 @@ export default function Inventory() {
   const { inventory, loading, refresh } = useInventory();
   const { lastEvents } = useRealtime();
   const [showRefreshBanner, setShowRefreshBanner] = useState(false);
+  const [autoSyncMsg, setAutoSyncMsg] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMake, setFilterMake] = useState('All');
   const [filterBody, setFilterBody] = useState('All');
   const [filterStatus, setFilterStatus] = useState('All');
   const [sortBy, setSortBy] = useState('price-asc');
+  const autoSyncDismissRef = useRef(null);
 
   useEffect(() => {
     if (lastEvents.inventory) {
@@ -38,9 +43,63 @@ export default function Inventory() {
     }
   }, [lastEvents.inventory]);
 
+  useEffect(() => {
+    if (!window.autolander?.onFeedAutoSync) return undefined;
+
+    const clearDismissTimer = () => {
+      if (autoSyncDismissRef.current) {
+        clearTimeout(autoSyncDismissRef.current);
+        autoSyncDismissRef.current = null;
+      }
+    };
+
+    const stopListening = window.autolander.onFeedAutoSync((event) => {
+      const message = buildFeedAutoSyncMessage(event);
+      if (!message) return;
+
+      clearDismissTimer();
+      setAutoSyncMsg(message);
+
+      if (event.type === 'auto-sync-complete') {
+        setShowRefreshBanner(true);
+      }
+
+      const dismissMs = getFeedAutoSyncDismissMs(event);
+      if (dismissMs > 0) {
+        autoSyncDismissRef.current = setTimeout(() => {
+          setAutoSyncMsg(null);
+          autoSyncDismissRef.current = null;
+        }, dismissMs);
+      }
+    });
+
+    return () => {
+      clearDismissTimer();
+      stopListening();
+    };
+  }, []);
+
   const handleRefresh = () => {
     setShowRefreshBanner(false);
     refresh();
+  };
+
+  const handleMarkSold = async (vehicle) => {
+    const confirmed = window.confirm(
+      `Mark ${vehicle.year} ${vehicle.make} ${vehicle.model} as sold? This will also remove it from Facebook Marketplace.`
+    );
+    if (!confirmed) return;
+
+    try {
+      await markVehicleSold(vehicle.id);
+      const listingUrl = vehicle.listings?.facebook_marketplace?.listingUrl;
+      if (listingUrl && window.autolander?.fb?.delistVehicle) {
+        window.autolander.fb.delistVehicle({ listingUrl }).catch(() => {});
+      }
+      refresh();
+    } catch (e) {
+      alert(e.message || 'Failed to mark as sold');
+    }
   };
 
   const allVehicles = inventory?.vehicles || [];
@@ -55,7 +114,13 @@ export default function Inventory() {
     }
     if (filterMake !== 'All' && v.make !== filterMake) return false;
     if (filterBody !== 'All' && (v.body_style || v.bodyStyle || '') !== filterBody) return false;
-    if (filterStatus !== 'All' && (v.status || 'available') !== filterStatus) return false;
+    
+    if (filterStatus === 'needs_update') {
+      if (!v.listings?.facebook_marketplace?.stale) return false;
+    } else if (filterStatus !== 'All' && (v.status || 'available') !== filterStatus) {
+      return false;
+    }
+    
     return true;
   });
 
@@ -74,6 +139,19 @@ export default function Inventory() {
 
   return (
     <div className="space-y-8 pb-12">
+      {autoSyncMsg && (
+        <div className={`flex items-center gap-2 p-3 rounded-2xl text-xs font-bold uppercase tracking-widest ${
+          autoSyncMsg.type === 'success'
+            ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
+            : autoSyncMsg.type === 'info'
+            ? 'bg-blue-500/10 border border-blue-500/20 text-blue-400'
+            : 'bg-rose-500/10 border border-rose-500/20 text-rose-400'
+        }`}>
+          {autoSyncMsg.type === 'success' ? <Zap size={14} /> : autoSyncMsg.type === 'info' ? <RefreshCw size={14} className="animate-spin" /> : <AlertCircle size={14} />}
+          {autoSyncMsg.text}
+        </div>
+      )}
+
       <AnimatePresence>
         {showRefreshBanner && (
           <motion.div 
@@ -149,6 +227,7 @@ export default function Inventory() {
             options={[
               { value: 'All', label: 'All Status' },
               { value: 'available', label: 'Available' },
+              { value: 'needs_update', label: 'Needs Update' },
               { value: 'sold', label: 'Sold' },
               { value: 'potentially_sold', label: 'Potentially Sold' },
             ]}
@@ -216,6 +295,19 @@ export default function Inventory() {
                         LIVE ON FB
                      </Badge>
                    )}
+                   {v.listings?.facebook_marketplace?.stale && (
+                      <Badge variant="warning" size="xs">
+                        <AlertCircle size={8} className="mr-1" />
+                        {(() => {
+                          const reason = v.listings.facebook_marketplace.staleReason || '';
+                          const priceMatch = reason.match(/price_changed:([\d.]+)->([\d.]+)/);
+                          if (priceMatch) {
+                            return `$${Number(priceMatch[1]).toLocaleString()} → $${Number(priceMatch[2]).toLocaleString()}`;
+                          }
+                          return 'NEEDS UPDATE';
+                        })()}
+                      </Badge>
+                    )}
                 </div>
 
                 <div className="absolute bottom-4 right-4 z-20">
@@ -254,9 +346,19 @@ export default function Inventory() {
                      <History size={12} className="text-brand-500/50" />
                      {v.vin?.slice(-8) || 'NO VIN'}
                    </div>
-                   <button className="p-2 bg-surface-900 hover:bg-surface-800 rounded-lg text-surface-400 hover:text-brand-400 transition-all">
-                     <ExternalLink size={16} />
-                   </button>
+                   <div className="flex items-center gap-2">
+                     {v.listings?.facebook_marketplace?.posted && v.status === 'available' && (
+                       <button
+                         onClick={() => handleMarkSold(v)}
+                         className="px-2 py-1 text-[10px] font-black uppercase tracking-widest text-surface-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all"
+                       >
+                         Mark Sold
+                       </button>
+                     )}
+                     <button className="p-2 bg-surface-900 hover:bg-surface-800 rounded-lg text-surface-400 hover:text-brand-400 transition-all">
+                       <ExternalLink size={16} />
+                     </button>
+                   </div>
                 </div>
               </div>
             </motion.div>

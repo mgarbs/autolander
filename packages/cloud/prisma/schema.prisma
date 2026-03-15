@@ -61,6 +61,7 @@ enum FeedType {
   AUTOTRADER
   GENERIC_XML
   HTML_SCRAPE
+  VAUTO
 }
 
 model Organization {

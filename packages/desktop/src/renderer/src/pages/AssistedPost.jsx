@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getPostQueue, markVehiclePosted } from '../api/client';
+import { getPostQueue, markVehiclePosted, markVehicleUpdated } from '../api/client';
 import FilterDropdown from '../components/FilterDropdown';
 import {
   Send,
@@ -48,29 +48,41 @@ export default function AssistedPost() {
     if (startingVin) return;
     setStartingVin(vehicle.vin);
     try {
-      await window.autolander.fb.startAssistedPost({ vehicle });
+      const fb = vehicle.listings?.facebook_marketplace;
+      if (fb?.stale && fb?.listingUrl) {
+        // Update existing listing
+        await window.autolander.fb.updateListing({ vehicle, listingUrl: fb.listingUrl });
+      } else {
+        // New post
+        await window.autolander.fb.startAssistedPost({ vehicle });
+      }
       setSelectedVin(vehicle.vin);
       setPhase('streaming');
     } catch (e) {
-      alert(e.message || 'Failed to start posting session');
+      alert(e.message || 'Failed to start session');
       setStartingVin(null);
     }
   };
 
   const handleResult = async (data) => {
-    // Mark the vehicle as posted in the database
+    // Mark the vehicle as posted/updated in the database
     if (data && !data.error) {
       const vehicle = vehicles.find(v => v.vin === selectedVin);
+      const fb = vehicle?.listings?.facebook_marketplace;
       try {
-        await markVehiclePosted({
-          vehicleId: vehicle?.id,
-          vin: selectedVin,
-          postUrl: data.postUrl,
-          postId: data.postId,
-          postedAt: data.postedAt,
-        });
+        if (fb?.stale && fb?.listingUrl) {
+          await markVehicleUpdated(vehicle.id);
+        } else {
+          await markVehiclePosted({
+            vehicleId: vehicle?.id,
+            vin: selectedVin,
+            postUrl: data.postUrl,
+            postId: data.postId,
+            postedAt: data.postedAt,
+          });
+        }
       } catch (e) {
-        console.error('Failed to mark vehicle as posted:', e.message);
+        console.error('Failed to update vehicle status:', e.message);
       }
     }
     setResultData(data);
@@ -109,6 +121,8 @@ const PER_PAGE = 12;
 function VehicleCard({ v, onSelect, variant = 'default', isStarting = false, disableActions = false }) {
   const isStale = variant === 'stale';
   const disabled = disableActions || isStarting;
+  const hasUrl = !!v.listings?.facebook_marketplace?.listingUrl;
+
   return (
     <div className={`glass-card overflow-hidden group transition-all ${isStale ? 'hover:border-amber-500/30 border-amber-500/10' : 'hover:border-brand-500/30'}`}>
       {/* Photo thumbnail */}
@@ -163,7 +177,7 @@ function VehicleCard({ v, onSelect, variant = 'default', isStarting = false, dis
           }`}
         >
           {isStarting ? <Loader2 size={14} className="animate-spin" /> : (isStale ? <RefreshCw size={14} /> : <Send size={14} />)}
-          {isStarting ? 'Starting...' : (isStale ? 'Re-Post with Updates' : 'Post to Marketplace')}
+          {isStarting ? 'Starting...' : (isStale ? (hasUrl ? 'Update on FB' : 'Re-Post') : 'Post to Marketplace')}
         </button>
       </div>
     </div>

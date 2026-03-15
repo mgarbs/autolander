@@ -16,7 +16,8 @@ import {
   LayoutGrid,
   TrendingUp,
   Activity,
-  ArrowUpRight
+  ArrowUpRight,
+  AlertCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -56,6 +57,7 @@ export default function ManagerDashboard() {
   const vehicles = inventory?.vehicles || [];
   const available = vehicles.filter(v => v.status === 'available').length;
   const posted = vehicles.filter(v => v.listings?.facebook_marketplace?.posted).length;
+  const staleCount = vehicles.filter(v => v.listings?.facebook_marketplace?.stale).length;
 
   return (
     <div className="space-y-10 pb-12">
@@ -80,12 +82,13 @@ export default function ManagerDashboard() {
       </header>
 
       {/* Primary Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-6">
         <StatsCard label="TEAM LEADS" value={totalActive} icon={Users} highlight />
         <StatsCard label="HOT LEADS" value={pipeline.hot || 0} icon={Flame} />
         <StatsCard label="APPOINTMENTS" value={stats?.todayAppointments || 0} subtext="Today" icon={CalendarCheck} />
         <StatsCard label="VEHICLES" value={vehicles.length} subtext={`${available} available`} icon={CarFront} />
         <StatsCard label="FB POSTS" value={posted} subtext={`${Math.round((posted/vehicles.length)*100)}% coverage`} icon={ArrowUpRight} />
+        <StatsCard label="STALE" value={staleCount} subtext="Need update" icon={AlertCircle} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -115,7 +118,8 @@ export default function ManagerDashboard() {
                  { label: 'Available', value: available, color: 'text-emerald-400', icon: CheckCircle2 },
                  { label: 'Pending', value: vehicles.filter(v => v.status === 'pending').length, color: 'text-amber-400', icon: Clock },
                  { label: 'Sold', value: vehicles.filter(v => v.status === 'sold').length, color: 'text-blue-400', icon: History },
-                 { label: 'Posted', value: posted, color: 'text-brand-400', icon: ShieldCheck }
+                 { label: 'Posted', value: posted, color: 'text-brand-400', icon: ShieldCheck },
+                 { label: 'Stale', value: staleCount, color: 'text-amber-400', icon: AlertCircle }
                ].map((item, idx) => (
                  <div key={idx} className="bg-surface-950/50 p-4 rounded-2xl border border-surface-800 flex flex-col items-center text-center">
                     <item.icon size={16} className={`${item.color} mb-3`} />

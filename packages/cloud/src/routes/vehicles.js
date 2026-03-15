@@ -87,6 +87,45 @@ module.exports = function createVehiclesRouter(prisma) {
     res.json({ success: true, vehicle: updated });
   });
 
+  router.put('/:id/mark-updated', async (req, res) => {
+    const vehicle = await prisma.vehicle.findFirst({
+      where: { id: req.params.id, orgId: req.orgId },
+    });
+    if (!vehicle) return res.status(404).json({ error: 'Vehicle not found.' });
+
+    const updated = await prisma.vehicle.update({
+      where: { id: vehicle.id },
+      data: {
+        fbPostedPrice: vehicle.price,
+        fbPostedPhotosHash: crypto
+          .createHash('sha256')
+          .update(JSON.stringify(vehicle.photos || []))
+          .digest('hex'),
+        fbPostedDescription: vehicle.description || null,
+        fbStale: false,
+        fbStaleReason: null,
+        fbStaleSince: null,
+      },
+    });
+
+    res.json({ success: true, vehicle: updated });
+  });
+
+  router.put('/:id/mark-sold', async (req, res) => {
+    const result = await prisma.vehicle.updateMany({
+      where: { id: req.params.id, orgId: req.orgId },
+      data: {
+        status: 'SOLD',
+        fbPosted: false,
+        fbStale: false,
+        fbStaleReason: null,
+        fbStaleSince: null,
+      },
+    });
+    if (result.count === 0) return res.status(404).json({ error: 'Vehicle not found.' });
+    res.json({ success: true });
+  });
+
   router.get('/:id', async (req, res) => {
     const vehicle = await prisma.vehicle.findFirst({
       where: { id: req.params.id, orgId: req.orgId },

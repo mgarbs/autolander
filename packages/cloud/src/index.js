@@ -30,8 +30,8 @@ const app = express();
 app.disable('x-powered-by');
 
 // --- Body parsing ---
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // --- CORS ---
 app.use((req, res, next) => {
@@ -188,10 +188,43 @@ server.listen(PORT, () => {
 
       for (const feed of feeds) {
         try {
+          const feedUrl = typeof feed.feedUrl === 'string' ? feed.feedUrl.toLowerCase() : '';
+          const requiresBrowserFetch =
+            feed.feedType === 'CARSCOM' ||
+            feed.feedType === 'CARGURUS' ||
+            feedUrl.includes('cars.com') ||
+            feedUrl.includes('cargurus.com');
+
+          if (requiresBrowserFetch) {
+            console.log(`[feed-scheduler] Skipping ${feed.feedType || 'browser-protected'} feed ${feed.id} (requires browser fetch)`);
+            continue;
+          }
+
           const result = await feedSync.syncFeed(feed, prisma);
           console.log(
             `[feed-scheduler] Feed ${feed.id} synced: found=${result.vehiclesFound}, added=${result.vehiclesAdded}, updated=${result.vehiclesUpdated}, errors=${result.errors.length}`
           );
+
+          // Broadcast updated stats to connected dashboard clients
+          try {
+            const [total, posted, stale] = await Promise.all([
+              prisma.vehicle.count({ where: { orgId: feed.orgId, status: 'ACTIVE' } }),
+              prisma.vehicle.count({ where: { orgId: feed.orgId, fbPosted: true } }),
+              prisma.vehicle.count({ where: { orgId: feed.orgId, fbPosted: true, fbStale: true, status: 'ACTIVE' } }),
+            ]);
+            clientGateway.broadcast(feed.orgId, {
+              type: 'feed_sync_complete',
+              feedId: feed.id,
+              result: {
+                vehiclesFound: result.vehiclesFound,
+                vehiclesAdded: result.vehiclesAdded,
+                vehiclesUpdated: result.vehiclesUpdated,
+              },
+              stats: { vehicles: total, posted, stale },
+            });
+          } catch (broadcastErr) {
+            console.error(`[feed-scheduler] Broadcast error for feed ${feed.id}: ${broadcastErr.message}`);
+          }
         } catch (feedError) {
           console.error(`[feed-scheduler] Feed ${feed.id} failed: ${feedError.message}`);
         }

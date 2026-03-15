@@ -6,6 +6,7 @@ const { createEmptyVehicle } = require('./schema');
 const LOG_PREFIX = '[feed-parser:carscom]';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
 const REQUEST_TIMEOUT_MS = 30000;
+const CARSCOM_BASE_URL = 'https://www.cars.com';
 const VIN_REGEX = /^[A-HJ-NPR-Z0-9]{17}$/i;
 const VIN_FINDER_REGEX = /\b([A-HJ-NPR-Z0-9]{17})\b/i;
 
@@ -60,16 +61,39 @@ function ensureArray(value) {
   return [value];
 }
 
+function resolveUrl(value, baseUrl) {
+  const text = cleanText(value);
+  if (!text) return null;
+  if (/^[a-z]+:/i.test(text)) return text;
+  if (text.startsWith('//')) return `https:${text}`;
+  try {
+    return new URL(text, baseUrl || CARSCOM_BASE_URL).toString();
+  } catch {
+    return text;
+  }
+}
+
 function uniqPhotos(photos) {
   const seen = new Set();
   const out = [];
   for (const p of photos) {
-    const url = cleanText(p);
+    const url = resolveUrl(p, CARSCOM_BASE_URL);
     if (!url || seen.has(url)) continue;
     seen.add(url);
     out.push(url);
   }
   return out;
+}
+
+function vehicleIdentityKey(vehicle) {
+  const vin = normalizeVin(vehicle?.vin);
+  if (vin) return `vin:${vin}`;
+
+  const year = normalizeYear(vehicle?.year);
+  const make = cleanText(vehicle?.make)?.toLowerCase();
+  const model = cleanText(vehicle?.model)?.toLowerCase();
+  if (!year || !make || !model) return null;
+  return `ymm:${year}|${make}|${model}`;
 }
 
 function parseTitleToParts(title) {
@@ -116,7 +140,7 @@ function toVehicle(raw, feedUrl) {
       typeof item === 'string' ? item : item?.url || item?.contentUrl
     )
   );
-  vehicle.dealerUrl = cleanText(raw.url || raw.dealerUrl || feedUrl);
+  vehicle.dealerUrl = resolveUrl(raw.url || raw.dealerUrl || feedUrl, feedUrl);
 
   return vehicle;
 }
@@ -125,12 +149,69 @@ function dedupe(vehicles) {
   const out = [];
   const seen = new Set();
   for (const vehicle of vehicles) {
-    const key = vehicle.vin || `${vehicle.year}|${vehicle.make}|${vehicle.model}|${vehicle.price || ''}`;
+    const key = vehicleIdentityKey(vehicle) || `${out.length}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(vehicle);
   }
   return out;
+}
+
+function mergeVehicles(primaryVehicles, supplementalVehicles) {
+  const merged = [];
+  const byKey = new Map();
+
+  const upsert = (vehicle, primary) => {
+    const normalized = {
+      ...vehicle,
+      photos: uniqPhotos(vehicle.photos || []),
+    };
+    const key = vehicleIdentityKey(normalized);
+
+    if (!key) {
+      merged.push(normalized);
+      return;
+    }
+
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, normalized);
+      merged.push(normalized);
+      return;
+    }
+
+    if (primary) {
+      const mergedVehicle = {
+        ...normalized,
+        photos: uniqPhotos([...(normalized.photos || []), ...(existing.photos || [])]),
+      };
+      byKey.set(key, mergedVehicle);
+      const index = merged.indexOf(existing);
+      if (index !== -1) merged[index] = mergedVehicle;
+      return;
+    }
+
+    existing.photos = uniqPhotos([...(existing.photos || []), ...(normalized.photos || [])]);
+    if (!existing.dealerUrl && normalized.dealerUrl) existing.dealerUrl = normalized.dealerUrl;
+  };
+
+  primaryVehicles.forEach((vehicle) => upsert(vehicle, true));
+  supplementalVehicles.forEach((vehicle) => upsert(vehicle, false));
+
+  return merged;
+}
+
+function parseHtml(html, feedUrl) {
+  if (!html) return [];
+
+  const jsonLdVehicles = parseJsonLdVehicles(html, feedUrl);
+  const scrapedVehicles = scrapeVehicleCards(html, feedUrl);
+  const vehicles = mergeVehicles(jsonLdVehicles, scrapedVehicles);
+
+  console.log(
+    `${LOG_PREFIX} extracted ${jsonLdVehicles.length} vehicles via JSON-LD, ${scrapedVehicles.length} via HTML, merged ${vehicles.length}`
+  );
+  return vehicles;
 }
 
 async function fetchText(feedUrl) {
@@ -229,19 +310,12 @@ module.exports = {
       console.log(`${LOG_PREFIX} parsing ${feedUrl}`);
       const html = await fetchText(feedUrl);
       if (!html) return [];
-
-      const jsonLdVehicles = parseJsonLdVehicles(html, feedUrl);
-      if (jsonLdVehicles.length) {
-        console.log(`${LOG_PREFIX} extracted ${jsonLdVehicles.length} vehicles via JSON-LD`);
-        return jsonLdVehicles;
-      }
-
-      const scrapedVehicles = scrapeVehicleCards(html, feedUrl);
-      console.log(`${LOG_PREFIX} extracted ${scrapedVehicles.length} vehicles via HTML`);
-      return scrapedVehicles;
+      return parseHtml(html, feedUrl);
     } catch (error) {
       console.error(`${LOG_PREFIX} parse failed: ${error.message}`);
       return [];
     }
   },
+
+  parseHtml,
 };

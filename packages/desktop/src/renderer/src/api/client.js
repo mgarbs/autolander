@@ -248,6 +248,18 @@ export async function markVehiclePosted({ vehicleId, vin, postUrl, postId, poste
   });
 }
 
+export function markVehicleUpdated(vehicleId) {
+  return fetchJSON(`/api/vehicles/${encodeURIComponent(vehicleId)}/mark-updated`, {
+    method: 'PUT',
+  });
+}
+
+export function markVehicleSold(vehicleId) {
+  return fetchJSON(`/api/vehicles/${encodeURIComponent(vehicleId)}/mark-sold`, {
+    method: 'PUT',
+  });
+}
+
 // --- FB operations (via IPC bridge in Electron) ---
 
 export async function getFbStatus() {

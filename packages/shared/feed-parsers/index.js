@@ -4,12 +4,14 @@ const cargurus = require('./cargurus');
 const carscom = require('./carscom');
 const autotrader = require('./autotrader');
 const generic = require('./generic');
+const vauto = require('./vauto');
 
 const PARSERS = {
   CARGURUS: cargurus,
   CARSCOM: carscom,
   AUTOTRADER: autotrader,
   GENERIC_XML: generic,
+  VAUTO: vauto,
   HTML_SCRAPE: generic,
 };
 
@@ -20,6 +22,7 @@ function detectFeedType(url) {
   const lower = url.toLowerCase();
   if (lower.includes('cargurus.com')) return 'CARGURUS';
   if (lower.includes('cars.com')) return 'CARSCOM';
+  if (lower.includes('vauto') || lower.includes('vinsolutions')) return 'VAUTO';
   if (lower.includes('autotrader')) return 'AUTOTRADER';
   if (lower.endsWith('.xml')) return 'GENERIC_XML';
   return 'HTML_SCRAPE';

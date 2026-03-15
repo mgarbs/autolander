@@ -120,6 +120,95 @@ class FbPosterAdapter {
     return { cancelled: true };
   }
 
+  async startAssistedUpdate(vehicleData, listingUrl) {
+    if (this.assistedSession) {
+      this.assistedSession.destroy();
+      this.assistedSession = null;
+    }
+
+    const { AssistedPostSession } = require('../../../lib/assisted-post-session');
+    const session = new AssistedPostSession({
+      salespersonId: this.salespersonId,
+      vehicle: vehicleData,
+      apiUrl: this.apiUrl,
+      authToken: this.authToken,
+      editListingUrl: listingUrl,
+    });
+
+    session.onFrame = (frameData) => this._send('fb:frame', { data: frameData });
+    session.onStatusChange = (status) => {
+      this._send('fb:progress', {
+        stage: status.state,
+        message: status.message,
+        percent: this._statusPercent(status.state),
+        detail: status.detail || null,
+      });
+    };
+
+    this.assistedSession = session;
+    session.start().catch((err) => {
+      console.error('[fb-poster-adapter] update session error:', err.message);
+      this._send('fb:progress', {
+        stage: 'error',
+        message: err.message || 'Failed to start update session',
+        percent: 100,
+      });
+    });
+    return { started: true };
+  }
+
+  async delistVehicle(listingUrl) {
+    this._send('fb:progress', {
+      stage: 'initializing',
+      message: 'Preparing to mark listing as sold...',
+      percent: 10,
+    });
+
+    const poster = await this._getPoster();
+
+    this._send('fb:progress', {
+      stage: 'delisting',
+      message: 'Marking listing as sold on Facebook...',
+      percent: 50,
+    });
+
+    const result = await poster.markListingAsSold(listingUrl);
+
+    this._send('fb:progress', {
+      stage: result.success ? 'complete' : 'failed',
+      message: result.success ? 'Listing marked as sold' : 'Failed to mark as sold',
+      percent: 100,
+    });
+
+    return result;
+  }
+
+  async renewListing(listingUrl) {
+    this._send('fb:progress', {
+      stage: 'initializing',
+      message: 'Preparing to renew listing...',
+      percent: 10,
+    });
+
+    const poster = await this._getPoster();
+
+    this._send('fb:progress', {
+      stage: 'renewing',
+      message: 'Renewing listing on Facebook...',
+      percent: 50,
+    });
+
+    const result = await poster.renewListing(listingUrl);
+
+    this._send('fb:progress', {
+      stage: result.success ? 'complete' : 'failed',
+      message: result.success ? 'Listing renewed' : 'Failed to renew listing',
+      percent: 100,
+    });
+
+    return result;
+  }
+
   async destroy() {
     this.cancelAssistedPost();
     if (this.poster) {

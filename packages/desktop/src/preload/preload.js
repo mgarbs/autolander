@@ -4,6 +4,16 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('autolander', {
   fetchFeedHtml: (url) => ipcRenderer.invoke('feed:fetch-html', url),
+  onFeedSyncProgress: (cb) => {
+    const listener = (_event, data) => cb(data);
+    ipcRenderer.on('feed:sync-progress', listener);
+    return () => ipcRenderer.removeListener('feed:sync-progress', listener);
+  },
+  onFeedAutoSync: (cb) => {
+    const listener = (_event, data) => cb(data);
+    ipcRenderer.on('feed:auto-sync', listener);
+    return () => ipcRenderer.removeListener('feed:auto-sync', listener);
+  },
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
   // Agent connection
@@ -29,6 +39,9 @@ contextBridge.exposeInMainWorld('autolander', {
     startAssistedPost: (opts) => ipcRenderer.invoke('fb:start-assisted-post', opts),
     cancelAssistedPost: () => ipcRenderer.invoke('fb:cancel-assisted-post'),
     sendInput: (data) => ipcRenderer.invoke('fb:send-input', data),
+    updateListing: (opts) => ipcRenderer.invoke('fb:update-listing', opts),
+    delistVehicle: (opts) => ipcRenderer.invoke('fb:delist-vehicle', opts),
+    renewListing: (opts) => ipcRenderer.invoke('fb:renew-listing', opts),
     onProgress: (cb) => {
       const listener = (_event, data) => cb(data);
       ipcRenderer.on('fb:progress', listener);

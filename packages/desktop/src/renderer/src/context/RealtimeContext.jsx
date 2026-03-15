@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { wsClient } from '../api/ws-client';
 import { getBaseUrl } from '../api/client';
 import { useAuth } from './AuthContext';
+import { buildFeedAutoSyncMessage } from '../lib/feed-auto-sync';
 
 const RealtimeContext = createContext(null);
 
@@ -68,6 +69,22 @@ export function RealtimeProvider({ children }) {
       wsClient.disconnect();
     };
   }, [user]);
+
+  useEffect(() => {
+    if (!window.autolander?.onFeedAutoSync) return undefined;
+
+    const stopListening = window.autolander.onFeedAutoSync((event) => {
+      if (event?.type !== 'auto-sync-complete') return;
+      const message = buildFeedAutoSyncMessage(event);
+      if (message?.text) {
+        showNotification(message.text, 'success');
+      }
+    });
+
+    return () => {
+      stopListening();
+    };
+  }, []);
 
   return (
     <RealtimeContext.Provider value={{ connected, lastEvents, notification, showNotification, wsClient }}>

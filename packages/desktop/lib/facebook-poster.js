@@ -926,6 +926,100 @@ class FacebookPoster {
     return true;
   }
 
+  async goToEditListing(listingUrl) {
+    this.log('Navigating to edit listing...');
+    // Facebook edit URL pattern: append /edit to the listing URL
+    // e.g., https://www.facebook.com/marketplace/item/123 -> .../item/123/edit
+    const editUrl = listingUrl.replace(/\/?$/, '') + '/edit';
+    await this.page.goto(editUrl, {
+      waitUntil: 'networkidle2',
+      timeout: 30000,
+    });
+    await humanDelay(2000, 4000);
+    await this.takeScreenshot('debug_edit_listing_loaded');
+    this.log('Edit listing page loaded');
+  }
+
+  async markListingAsSold(listingUrl) {
+    this.log('Navigating to listing to mark as sold...');
+    await this.page.goto(listingUrl, {
+      waitUntil: 'networkidle2',
+      timeout: 30000,
+    });
+    await humanDelay(2000, 4000);
+
+    // Look for "Mark as Sold" or "Mark as sold" button/link
+    const sold = await this.page.evaluate(() => {
+      const selectors = ['[aria-label*="sold" i]', '[aria-label*="Sold" i]'];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el) { el.click(); return true; }
+      }
+      // Fallback: find by text content
+      const allButtons = [...document.querySelectorAll('[role="button"], button')];
+      for (const btn of allButtons) {
+        if ((btn.textContent || '').toLowerCase().includes('mark as sold')) {
+          btn.click();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (sold) {
+      await humanDelay(2000, 3000);
+      // Confirm the "sold" dialog if one appears
+      await this.page.evaluate(() => {
+        const confirmBtns = [...document.querySelectorAll('[role="button"], button')];
+        for (const btn of confirmBtns) {
+          const text = (btn.textContent || '').toLowerCase().trim();
+          if (text === 'confirm' || text === 'mark as sold' || text === 'yes') {
+            btn.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      await humanDelay(1000, 2000);
+      this.log('Marked listing as sold');
+    } else {
+      this.log('Could not find "Mark as Sold" button');
+    }
+
+    return { success: sold, listingUrl };
+  }
+
+  async renewListing(listingUrl) {
+    this.log('Navigating to listing to renew...');
+    await this.page.goto(listingUrl, {
+      waitUntil: 'networkidle2',
+      timeout: 30000,
+    });
+    await humanDelay(2000, 4000);
+
+    // Look for "Renew" or "Relist" button
+    const renewed = await this.page.evaluate(() => {
+      const allButtons = [...document.querySelectorAll('[role="button"], button')];
+      for (const btn of allButtons) {
+        const text = (btn.textContent || '').toLowerCase().trim();
+        if (text === 'renew' || text === 'renew listing' || text === 'relist') {
+          btn.click();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (renewed) {
+      await humanDelay(2000, 3000);
+      this.log('Renewed listing');
+    } else {
+      this.log('Could not find "Renew" button');
+    }
+
+    return { success: renewed, listingUrl };
+  }
+
   /**
    * Post a vehicle listing to Facebook Marketplace
    * @param {object} vehicle - Vehicle with generated_content

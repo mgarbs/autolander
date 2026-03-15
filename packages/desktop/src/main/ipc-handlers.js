@@ -11,6 +11,7 @@ let commandRouter = null;
 let fbPosterAdapter = null;
 let fbInboxAdapter = null;
 let fbAuthAdapter = null;
+let feedAutoSync = null;
 let agentCredentials = { serverUrl: '', accessToken: '' };
 let inboxPolling = null;
 
@@ -81,6 +82,193 @@ function sendAgentStatus(status) {
   win.webContents.send('agent:status', status);
   // Backward compatibility for current preload bridge.
   win.webContents.send('agent:status-update', status);
+}
+
+const FEED_FETCH_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const FEED_FETCH_MAX_WAIT_MS = 30000;
+const FEED_FETCH_POLL_INTERVAL_MS = 2000;
+const FEED_FETCH_SCROLL_SETTLE_MS = 1000;
+const FEED_FETCH_EXTRA_SCROLLS = 10;
+const FEED_FETCH_EXTRA_SCROLL_DELAY_MS = 1500;
+const FEED_FETCH_PAGE_DELAY_MS = 2000;
+const FEED_FETCH_MAX_PAGES = 50;
+const FEED_FETCH_PAGINATION_JS = `
+  (function() {
+    const pageLinks = document.querySelectorAll(
+      '.sds-pagination a[href*="page="], .pagination a[href*="page="], nav a[href*="page="]'
+    );
+    let maxPage = 1;
+    pageLinks.forEach((a) => {
+      const match = a.href.match(/[?&]page=(\\d+)/);
+      if (match) maxPage = Math.max(maxPage, parseInt(match[1], 10));
+    });
+    const pageNums = document.querySelectorAll(
+      '.sds-pagination__item, .pagination li, nav[aria-label*="pagination"] li'
+    );
+    pageNums.forEach((el) => {
+      const num = parseInt(el.textContent.trim(), 10);
+      if (!Number.isNaN(num) && num > maxPage) maxPage = num;
+    });
+    return maxPage;
+  })()
+`;
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function hasFeedListings(html) {
+  return (
+    // CarGurus markers
+    html.includes('listingTitle') ||
+    html.includes('carYear') ||
+    // Cars.com markers
+    html.includes('vehicle-card') ||
+    html.includes('shop-srp-listings') ||
+    // Generic markers
+    html.includes('car-blade') ||
+    html.includes('listing-row') ||
+    html.includes('__NEXT_DATA__') ||
+    // JSON-LD with vehicle data (not just any ld+json — must mention vehicle/auto)
+    (html.includes('application/ld+json') && (html.includes('Vehicle') || html.includes('AutoDealer')))
+  );
+}
+
+async function collectFeedHtml(win, label) {
+  let html = '';
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < FEED_FETCH_MAX_WAIT_MS) {
+    await delay(FEED_FETCH_POLL_INTERVAL_MS);
+
+    await win.webContents.executeJavaScript('window.scrollTo(0, document.body.scrollHeight)');
+    await delay(FEED_FETCH_SCROLL_SETTLE_MS);
+
+    html = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
+
+    const hasChallenge = html.includes('Client Challenge') || html.includes('Enter the characters');
+    if (!hasChallenge && hasFeedListings(html)) {
+      console.log('[feed:fetch-html] Content loaded successfully for', label, 'length:', html.length);
+      break;
+    }
+
+    console.log('[feed:fetch-html] Waiting for content for', label, 'elapsed:', Date.now() - startTime, 'ms');
+  }
+
+  for (let i = 0; i < FEED_FETCH_EXTRA_SCROLLS; i += 1) {
+    await win.webContents.executeJavaScript('window.scrollTo(0, document.body.scrollHeight)');
+    await delay(FEED_FETCH_EXTRA_SCROLL_DELAY_MS);
+
+    const newHtml = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
+    if (newHtml.length === html.length) break;
+    html = newHtml;
+  }
+
+  return win.webContents.executeJavaScript('document.documentElement.outerHTML');
+}
+
+async function detectFeedPageCount(win) {
+  try {
+    const pageCount = await win.webContents.executeJavaScript(FEED_FETCH_PAGINATION_JS);
+    const parsed = Number.parseInt(String(pageCount), 10);
+    if (!Number.isFinite(parsed) || parsed < 2) return 1;
+    return Math.min(parsed, FEED_FETCH_MAX_PAGES);
+  } catch (error) {
+    console.warn('[feed:fetch-html] Pagination detection failed:', error.message);
+    return 1;
+  }
+}
+
+function buildPaginatedUrl(baseUrl, page) {
+  const nextUrl = new URL(baseUrl);
+  nextUrl.searchParams.set('page', String(page));
+  return nextUrl.toString();
+}
+
+function sendFeedSyncProgress(data) {
+  const mainWin = getMainWindow();
+  if (mainWin && !mainWin.isDestroyed()) {
+    mainWin.webContents.send('feed:sync-progress', data);
+  }
+}
+
+async function emitFeedSyncProgress(onProgress, data) {
+  if (typeof onProgress !== 'function') return;
+  try {
+    await onProgress(data);
+  } catch (error) {
+    console.warn('[feed:fetch-html] Progress callback failed:', error.message);
+  }
+}
+
+async function fetchFeedHtmlWithBrowser(url, options = {}) {
+  const { onProgress = sendFeedSyncProgress } = options;
+
+  console.log('[feed:fetch-html] Loading URL in hidden browser:', url);
+
+  const win = new BrowserWindow({
+    show: false,
+    width: 1920,
+    height: 1080,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  try {
+    await win.webContents.session.setUserAgent(FEED_FETCH_UA);
+    await win.loadURL(url);
+
+    const collectedPages = [];
+    let partialError = null;
+    let html = await collectFeedHtml(win, 'page 1');
+    collectedPages.push(html);
+
+    const isCarsCom = typeof url === 'string' && url.toLowerCase().includes('cars.com');
+    const totalPages = isCarsCom ? await detectFeedPageCount(win) : 1;
+    await emitFeedSyncProgress(onProgress, { page: 1, totalPages });
+
+    if (isCarsCom) {
+      console.log('[feed:fetch-html] Detected Cars.com page count:', totalPages);
+
+      if (totalPages > 1) {
+        const baseUrl = win.webContents.getURL() || url;
+
+        for (let page = 2; page <= totalPages; page += 1) {
+          await delay(FEED_FETCH_PAGE_DELAY_MS);
+          await emitFeedSyncProgress(onProgress, { page, totalPages });
+
+          const pageUrl = buildPaginatedUrl(baseUrl, page);
+          console.log('[feed:fetch-html] Loading paginated URL:', pageUrl);
+
+          try {
+            await win.loadURL(pageUrl);
+            html = await collectFeedHtml(win, `page ${page}`);
+            collectedPages.push(html);
+          } catch (error) {
+            partialError = `Failed to load page ${page}: ${error.message}`;
+            console.error('[feed:fetch-html] Pagination stopped early:', partialError);
+            break;
+          }
+        }
+      }
+    }
+
+    html = collectedPages.filter(Boolean).join('\n');
+    console.log('[feed:fetch-html] Final HTML length:', html.length);
+    return partialError
+      ? { success: true, html, partial: true, error: partialError }
+      : { success: true, html };
+  } catch (error) {
+    console.error('[feed:fetch-html] Error:', error.message);
+    return { success: false, error: error.message, html: '' };
+  } finally {
+    if (!win.isDestroyed()) {
+      win.destroy();
+    }
+  }
 }
 
 function ensureAgentInfrastructure() {
@@ -162,6 +350,12 @@ function registerIpcHandlers(ipcMain) {
       console.error('[ipc] InboxPolling start error:', err.message);
     }
 
+    if (!feedAutoSync) {
+      const { FeedAutoSync } = require('./feed-auto-sync');
+      feedAutoSync = new FeedAutoSync();
+    }
+    feedAutoSync.start(nextServerUrl, nextAccessToken);
+
     return { connected: true, ...agentClient.getStatus() };
   });
 
@@ -179,6 +373,9 @@ function registerIpcHandlers(ipcMain) {
     }
     if (inboxPolling) {
       inboxPolling.stop();
+    }
+    if (feedAutoSync) {
+      feedAutoSync.stop();
     }
     return { disconnected: true };
   });
@@ -273,6 +470,30 @@ function registerIpcHandlers(ipcMain) {
     }
   });
 
+  ipcMain.handle('fb:update-listing', async (_event, { vehicle, listingUrl }) => {
+    try {
+      return await getIpcFbPosterAdapter().startAssistedUpdate(vehicle, listingUrl);
+    } catch (error) {
+      return asErrorResult(error);
+    }
+  });
+
+  ipcMain.handle('fb:delist-vehicle', async (_event, { listingUrl }) => {
+    try {
+      return await getIpcFbPosterAdapter().delistVehicle(listingUrl);
+    } catch (error) {
+      return asErrorResult(error);
+    }
+  });
+
+  ipcMain.handle('fb:renew-listing', async (_event, { listingUrl }) => {
+    try {
+      return await getIpcFbPosterAdapter().renewListing(listingUrl);
+    } catch (error) {
+      return asErrorResult(error);
+    }
+  });
+
   ipcMain.handle('fb:send-input', async (_event, data) => {
     try {
       // data can be the raw input event, or { input, target } for explicit routing
@@ -313,72 +534,7 @@ function registerIpcHandlers(ipcMain) {
   });
 
   ipcMain.handle('feed:fetch-html', async (_event, url) => {
-    console.log('[feed:fetch-html] Loading URL in hidden browser:', url);
-
-    const win = new BrowserWindow({
-      show: false,
-      width: 1920,
-      height: 1080,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-      },
-    });
-
-    try {
-      await win.webContents.session.setUserAgent(
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      );
-
-      await win.loadURL(url);
-
-      let html = '';
-      const maxWaitMs = 30000;
-      const pollIntervalMs = 2000;
-      const startTime = Date.now();
-
-      while (Date.now() - startTime < maxWaitMs) {
-        await new Promise((r) => setTimeout(r, pollIntervalMs));
-
-        await win.webContents.executeJavaScript('window.scrollTo(0, document.body.scrollHeight)');
-        await new Promise((r) => setTimeout(r, 1000));
-
-        html = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
-
-        const hasChallenge = html.includes('Client Challenge') || html.includes('Enter the characters');
-        const hasListings =
-          html.includes('listingTitle') ||
-          html.includes('car-blade') ||
-          html.includes('listing-row') ||
-          html.includes('__NEXT_DATA__') ||
-          html.includes('carYear');
-
-        if (!hasChallenge && hasListings) {
-          console.log('[feed:fetch-html] Content loaded successfully, length:', html.length);
-          break;
-        }
-
-        console.log('[feed:fetch-html] Waiting for content... elapsed:', Date.now() - startTime, 'ms');
-      }
-
-      for (let i = 0; i < 10; i += 1) {
-        await win.webContents.executeJavaScript('window.scrollTo(0, document.body.scrollHeight)');
-        await new Promise((r) => setTimeout(r, 1500));
-
-        const newHtml = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
-        if (newHtml.length === html.length) break;
-        html = newHtml;
-      }
-
-      html = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
-      console.log('[feed:fetch-html] Final HTML length:', html.length);
-      return { success: true, html };
-    } catch (error) {
-      console.error('[feed:fetch-html] Error:', error.message);
-      return { success: false, error: error.message, html: '' };
-    } finally {
-      win.destroy();
-    }
+    return fetchFeedHtmlWithBrowser(url);
   });
 }
 
@@ -406,6 +562,9 @@ async function cleanupAdapters() {
   if (inboxPolling) {
     inboxPolling.stop();
   }
+  if (feedAutoSync) {
+    feedAutoSync.stop();
+  }
   if (agentClient) {
     agentClient.disconnect();
   }
@@ -413,4 +572,4 @@ async function cleanupAdapters() {
   console.log('[ipc] Adapter cleanup complete');
 }
 
-module.exports = { registerIpcHandlers, cleanupAdapters };
+module.exports = { registerIpcHandlers, cleanupAdapters, fetchFeedHtmlWithBrowser };
