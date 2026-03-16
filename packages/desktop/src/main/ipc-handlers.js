@@ -2,7 +2,7 @@
 
 const path = require('path');
 const os = require('os');
-const { BrowserWindow, shell } = require('electron');
+const { BrowserWindow, session, shell } = require('electron');
 const { getMainWindow } = require('./window-manager');
 const { enqueueFeedImageFetch, stopFeedImageFetch } = require('./feed-image-fetcher');
 
@@ -222,6 +222,10 @@ async function fetchFeedHtmlWithBrowser(url, options = {}) {
 
   console.log('[feed:fetch-html] Loading URL in hidden browser:', url);
 
+  const partition = `feed-html-${Date.now()}`;
+  const ses = session.fromPartition(partition, { cache: false });
+  await ses.setUserAgent(FEED_FETCH_UA);
+
   const win = new BrowserWindow({
     show: false,
     width: 1920,
@@ -229,11 +233,11 @@ async function fetchFeedHtmlWithBrowser(url, options = {}) {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      session: ses,
     },
   });
 
   try {
-    await win.webContents.session.setUserAgent(FEED_FETCH_UA);
     await win.loadURL(url);
 
     const collectedPages = [];
@@ -350,20 +354,24 @@ function registerIpcHandlers(ipcMain) {
     sendAgentStatus(agentClient.getStatus());
 
     // Start inbox polling for auto-reply
-    try {
-      if (!inboxPolling) {
-        const { InboxPolling } = require('../worker/inbox-polling');
-        inboxPolling = new InboxPolling({ fbInboxAdapter: getIpcFbInboxAdapter() });
-        console.log('[ipc] InboxPolling created');
-      }
-      inboxPolling.start(getIpcFbInboxAdapter(), {
-        serverUrl: nextServerUrl,
-        accessToken: nextAccessToken,
-      });
-      console.log('[ipc] InboxPolling started');
-    } catch (err) {
-      console.error('[ipc] InboxPolling start error:', err.message);
-    }
+    // NOTE: Disabled for local dev — inbox monitor hangs on Mac due to
+    // Chrome SingletonLock contention and undici/File incompatibility.
+    // Re-enable when Facebook integration is needed.
+    // try {
+    //   if (!inboxPolling) {
+    //     const { InboxPolling } = require('../worker/inbox-polling');
+    //     inboxPolling = new InboxPolling({ fbInboxAdapter: getIpcFbInboxAdapter() });
+    //     console.log('[ipc] InboxPolling created');
+    //   }
+    //   inboxPolling.start(getIpcFbInboxAdapter(), {
+    //     serverUrl: nextServerUrl,
+    //     accessToken: nextAccessToken,
+    //   });
+    //   console.log('[ipc] InboxPolling started');
+    // } catch (err) {
+    //   console.error('[ipc] InboxPolling start error:', err.message);
+    // }
+    console.log('[ipc] InboxPolling skipped (local dev mode)');
 
     if (!feedAutoSync) {
       const { FeedAutoSync } = require('./feed-auto-sync');

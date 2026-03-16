@@ -1,111 +1,41 @@
 'use strict';
 
-const { BrowserWindow } = require('electron');
+/**
+ * Feed Image Fetcher — fast, Mac-safe photo extraction using Electron net.
+ *
+ * Previous approach: spin up a full BrowserWindow for each vehicle's detail
+ * page, wait up to 30s for images to render, scroll 8 times. Per vehicle
+ * that was 30-40 seconds, freezing on Mac due to GPU crashes.
+ *
+ * New approach: HTTP GET the detail page via Electron's net module (Chromium
+ * TLS fingerprint, no GPU needed), parse with cheerio. Per vehicle: ~2-3s.
+ * Runs 3 concurrent fetches for throughput while staying under the radar.
+ *
+ * Cars.com serves full image URLs in server-rendered HTML — no browser
+ * rendering or JavaScript execution needed.
+ */
+
+const { net, session } = require('electron');
+const cheerio = require('cheerio');
 const { getMainWindow } = require('./window-manager');
 
-const FEED_FETCH_UA =
+const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
 const VEHICLE_PAGE_SIZE = 100;
-const RATE_LIMIT_MS = 2000;
-const SEARCH_PAGE_TIMEOUT_MS = 30000;
-const DETAIL_PAGE_TIMEOUT_MS = 30000;
-const POLL_INTERVAL_MS = 1000;
-const DETAIL_SCROLL_DELAY_MS = 800;
-const DETAIL_SCROLL_PASSES = 8;
-const MAX_SEARCH_PAGES = 50;
-const SEARCH_PAGE_INFO_JS = `
-  (function() {
-    return {
-      readyState: document.readyState,
-      listingCount: document.querySelectorAll('a.shop-card-link[href*="vehicledetail"]').length,
-      href: window.location.href
-    };
-  })()
-`;
-const SEARCH_PAGE_LISTINGS_JS = `
-  (function() {
-    var ids = [];
-    var seen = {};
-    var links = document.querySelectorAll('a.shop-card-link[href*="vehicledetail"]');
-    for (var i = 0; i < links.length; i += 1) {
-      var href = links[i].href || '';
-      var match = href.match(/\\/vehicledetail\\/([^/?#]+)/i);
-      if (!match) continue;
-      var listingId = match[1];
-      if (seen[listingId]) continue;
-      seen[listingId] = true;
-      ids.push(listingId);
-    }
-    return ids;
-  })()
-`;
-const SEARCH_PAGE_COUNT_JS = `
-  (function() {
-    var maxPage = 1;
-    document.querySelectorAll('a[id^="pagination-direct-link-"]').forEach(function(a) {
-      var match = a.id.match(/pagination-direct-link-(\\d+)/);
-      if (match) maxPage = Math.max(maxPage, parseInt(match[1], 10));
-    });
-    document.querySelectorAll('[phx-value-page]').forEach(function(el) {
-      var num = parseInt(el.getAttribute('phx-value-page'), 10);
-      if (!isNaN(num)) maxPage = Math.max(maxPage, num);
-    });
-    document.querySelectorAll('a[href*="page="]').forEach(function(a) {
-      var match = a.href.match(/[?&]page=(\\d+)/);
-      if (match) maxPage = Math.max(maxPage, parseInt(match[1], 10));
-    });
-    document.querySelectorAll('.sds-pagination__item, .pagination li').forEach(function(el) {
-      var text = (el.textContent || '').trim();
-      if (text.length > 3) return;
-      var num = parseInt(text, 10);
-      if (!isNaN(num) && num > 0) maxPage = Math.max(maxPage, num);
-    });
-    return maxPage;
-  })()
-`;
-const DETAIL_PAGE_INFO_JS = `
-  (function() {
-    var count = 0;
-    var imgs = document.querySelectorAll('img[src*="cstatic-images.com"]');
-    for (var i = 0; i < imgs.length; i += 1) {
-      var src = imgs[i].src || '';
-      if (!src) continue;
-      if (src.indexOf('dealer_media') !== -1) continue;
-      if (src.indexOf('static/app-images') !== -1) continue;
-      if (/\\.svg(?:\\?|#|$)/i.test(src)) continue;
-      count += 1;
-    }
-    return {
-      href: window.location.href,
-      imageCount: count
-    };
-  })()
-`;
-const DETAIL_IMAGES_JS = `
-  (function() {
-    var urls = [];
-    var seen = {};
-    var imgs = document.querySelectorAll('img[src*="cstatic-images.com"]');
-    for (var i = 0; i < imgs.length; i += 1) {
-      var src = imgs[i].src || '';
-      if (!src) continue;
-      if (src.indexOf('dealer_media') !== -1) continue;
-      if (src.indexOf('static/app-images') !== -1) continue;
-      if (/\\.svg(?:\\?|#|$)/i.test(src)) continue;
-      if (seen[src]) continue;
-      seen[src] = true;
-      urls.push(src);
-    }
-    return urls;
-  })()
-`;
+const FETCH_TIMEOUT_MS = 20_000;
+const MAX_CONSECUTIVE_FAILURES = 8;
+const SESSION_ROTATE_EVERY = 25;
+const CONCURRENCY = 3;                // parallel detail page fetches
+const BASE_DELAY_MS = 1_500;           // ~0.75-2.25s with jitter per request
+const NETWORK_ERROR_PAUSE_MS = 15_000; // extra pause after rate limit / block
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isStoppedError(error) {
-  return error && error.message === 'Image fetch stopped';
+function jitter(baseMs) {
+  return Math.round(baseMs * (0.5 + Math.random()));
 }
 
 function getFeedName(feed) {
@@ -116,24 +46,139 @@ function getVehicleName(vehicle) {
   return [vehicle?.year, vehicle?.make, vehicle?.model].filter(Boolean).join(' ') || vehicle?.vin || 'Vehicle';
 }
 
-function getListingIdFromDealerUrl(dealerUrl) {
-  if (typeof dealerUrl !== 'string') return null;
-  const match = dealerUrl.match(/\/vehicledetail\/([^/?#]+)/i);
-  return match ? match[1] : null;
+function isStoppedError(error) {
+  return error && error.message === 'Image fetch stopped';
 }
 
-function buildPaginatedUrl(baseUrl, page) {
-  const nextUrl = new URL(baseUrl);
-  if (page <= 1) {
-    nextUrl.searchParams.delete('page');
-  } else {
-    nextUrl.searchParams.set('page', String(page));
+/**
+ * Fetch URL via Electron net module (Chromium TLS fingerprint).
+ */
+function electronFetch(url, ses) {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      try { request.abort(); } catch {}
+      reject(new Error(`Timed out after ${FETCH_TIMEOUT_MS}ms`));
+    }, FETCH_TIMEOUT_MS);
+
+    const request = net.request({
+      url,
+      method: 'GET',
+      session: ses,
+      useSessionCookies: true,
+    });
+
+    request.setHeader('User-Agent', UA);
+    request.setHeader('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8');
+    request.setHeader('Accept-Language', 'en-US,en;q=0.9');
+    request.setHeader('Accept-Encoding', 'gzip, deflate, br');
+    request.setHeader('Cache-Control', 'no-cache');
+    request.setHeader('Sec-Ch-Ua', '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"');
+    request.setHeader('Sec-Ch-Ua-Mobile', '?0');
+    request.setHeader('Sec-Ch-Ua-Platform', '"Windows"');
+    request.setHeader('Sec-Fetch-Dest', 'document');
+    request.setHeader('Sec-Fetch-Mode', 'navigate');
+    request.setHeader('Sec-Fetch-Site', 'none');
+    request.setHeader('Sec-Fetch-User', '?1');
+    request.setHeader('Upgrade-Insecure-Requests', '1');
+
+    request.on('response', (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        clearTimeout(timeoutId);
+        const body = Buffer.concat(chunks).toString('utf8');
+        resolve({
+          ok: response.statusCode >= 200 && response.statusCode < 300,
+          status: response.statusCode,
+          body,
+        });
+      });
+      response.on('error', (error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      });
+    });
+
+    request.on('error', (error) => {
+      clearTimeout(timeoutId);
+      reject(error);
+    });
+
+    request.end();
+  });
+}
+
+/**
+ * Extract photo URLs from detail page HTML using cheerio.
+ */
+function extractPhotos(html) {
+  const $ = cheerio.load(html);
+  const urls = [];
+  const seen = new Set();
+
+  function add(src) {
+    if (!src) return;
+    if (!src.includes('cstatic-images.com')) return;
+    if (src.includes('dealer_media')) return;
+    if (src.includes('static/app-images')) return;
+    if (src.includes('placeholder')) return;
+    if (/\.svg(?:\?|#|$)/i.test(src)) return;
+    if (/\b(?:1x1|spacer|pixel|blank)\b/i.test(src)) return;
+    const upgraded = src.replace(
+      /\/(?:small|medium|large|xlarge)\/in\/v2\//i,
+      '/xxlarge/in/v2/'
+    );
+    if (seen.has(upgraded)) return;
+    seen.add(upgraded);
+    urls.push(upgraded);
   }
-  return nextUrl.toString();
+
+  $('img').each((_, el) => {
+    const node = $(el);
+    add(node.attr('src'));
+    add(node.attr('data-src'));
+    add(node.attr('data-original'));
+    add(node.attr('data-lazy-src'));
+    add(node.attr('data-hi-res-src'));
+  });
+
+  $('source[srcset]').each((_, el) => {
+    const srcset = $(el).attr('srcset') || '';
+    for (const part of srcset.split(',')) {
+      add(part.trim().split(/\s+/)[0]);
+    }
+  });
+
+  $('script[type="application/ld+json"]').each((_, el) => {
+    try {
+      const data = JSON.parse($(el).contents().text());
+      const images = Array.isArray(data.image) ? data.image : data.image ? [data.image] : [];
+      for (const img of images) {
+        add(typeof img === 'string' ? img : img?.url || img?.contentUrl);
+      }
+    } catch {}
+  });
+
+  $('meta[property="og:image"]').each((_, el) => {
+    add($(el).attr('content'));
+  });
+
+  return urls;
 }
 
-function escapeForJavaScript(value) {
-  return JSON.stringify(String(value || ''));
+function isNetworkError(error) {
+  if (!error) return false;
+  const msg = String(error.message || '');
+  return (
+    msg.includes('ERR_FAILED') ||
+    msg.includes('ERR_CONNECTION') ||
+    msg.includes('ERR_SSL') ||
+    msg.includes('ERR_NETWORK') ||
+    msg.includes('Timed out') ||
+    msg.includes('HTTP 403') ||
+    msg.includes('HTTP 429') ||
+    msg.includes('Challenge page')
+  );
 }
 
 class FeedImageFetcher {
@@ -141,31 +186,14 @@ class FeedImageFetcher {
     this.serverUrl = serverUrl || '';
     this.accessToken = accessToken || '';
     this.feed = null;
-    this.win = null;
     this.stopped = false;
-    this.currentSearchPage = 1;
-    this.lastDetailLoadAt = 0;
-    this.listingPageMap = new Map();
+    this._session = null;
+    this._vehiclesSinceRotate = 0;
   }
 
   stop() {
     this.stopped = true;
-
-    if (this.win && !this.win.isDestroyed()) {
-      try {
-        this.win.webContents.stop();
-      } catch (_) {
-        // Ignore shutdown errors.
-      }
-
-      try {
-        this.win.destroy();
-      } catch (_) {
-        // Ignore shutdown errors.
-      }
-    }
-
-    this.win = null;
+    this._session = null;
   }
 
   ensureActive() {
@@ -192,20 +220,34 @@ class FeedImageFetcher {
     }
   }
 
-  async executeJavaScript(script) {
-    this.ensureActive();
-    if (!this.win || this.win.isDestroyed()) {
-      throw new Error('Image fetch stopped');
+  _getSession() {
+    if (!this._session || this._vehiclesSinceRotate >= SESSION_ROTATE_EVERY) {
+      this._clearSession();
+      const partition = `image-fetcher-${Date.now()}`;
+      this._session = session.fromPartition(partition, { cache: false });
+      this._session.setUserAgent(UA);
+      this._vehiclesSinceRotate = 0;
     }
-    return this.win.webContents.executeJavaScript(script);
+    return this._session;
+  }
+
+  _resetSession() {
+    this._clearSession();
+    this._vehiclesSinceRotate = 0;
+  }
+
+  _clearSession() {
+    if (this._session) {
+      this._session.clearStorageData().catch(() => {});
+      this._session = null;
+    }
   }
 
   async start(feed) {
     this.feed = feed;
     this.stopped = false;
-    this.currentSearchPage = 1;
-    this.lastDetailLoadAt = 0;
-    this.listingPageMap = new Map();
+    this._vehiclesSinceRotate = 0;
+    this._session = null;
 
     const feedName = getFeedName(feed);
 
@@ -224,65 +266,93 @@ class FeedImageFetcher {
         return { total: 0, updated: 0, skipped: 0 };
       }
 
+      console.log(`[feed-image-fetcher] Starting photo fetch for ${vehicles.length} vehicles (net mode, concurrency=${CONCURRENCY})`);
+
       this.sendEvent('image-fetch-start', {
         feedId: feed?.id,
         feedName,
         total: vehicles.length,
       });
 
-      this.win = new BrowserWindow({
-        show: false,
-        width: 1920,
-        height: 1080,
-        webPreferences: {
-          nodeIntegration: false,
-          contextIsolation: true,
-        },
-      });
-
-      await this.win.webContents.session.setUserAgent(FEED_FETCH_UA);
-      await this.loadSearchPage(1);
-      await this.buildListingPageMap();
-      this.sortVehiclesBySearchPage(vehicles);
-
       let updated = 0;
       let skipped = 0;
+      let completed = 0;
+      let consecutiveFailures = 0;
 
-      for (let index = 0; index < vehicles.length; index += 1) {
+      // Process in chunks of CONCURRENCY for parallel fetching
+      for (let i = 0; i < vehicles.length; i += CONCURRENCY) {
         this.ensureActive();
 
-        const vehicle = vehicles[index];
-        const vehicleName = getVehicleName(vehicle);
-        this.sendEvent('image-fetch-progress', {
-          feedId: feed?.id,
-          feedName,
-          current: index + 1,
-          total: vehicles.length,
-          vehicleName,
-        });
+        const chunk = vehicles.slice(i, i + CONCURRENCY);
+        const results = await Promise.allSettled(
+          chunk.map((vehicle) => this._processOneVehicle(vehicle))
+        );
 
-        try {
-          const photoUrls = await this.fetchVehiclePhotos(vehicle);
+        for (let j = 0; j < results.length; j += 1) {
+          completed += 1;
+          const vehicle = chunk[j];
+          const vehicleName = getVehicleName(vehicle);
+          const result = results[j];
 
-          if (photoUrls.length === 0) {
+          // Send progress for each completed vehicle
+          this.sendEvent('image-fetch-progress', {
+            feedId: feed?.id,
+            feedName,
+            current: completed,
+            total: vehicles.length,
+            vehicleName,
+          });
+
+          if (result.status === 'fulfilled') {
+            const photoCount = result.value;
+            if (photoCount > 0) {
+              updated += 1;
+              consecutiveFailures = 0;
+            } else {
+              skipped += 1;
+              consecutiveFailures += 1;
+            }
+          } else {
             skipped += 1;
-            console.warn(`[feed-image-fetcher] No photos found for ${vehicleName} (${vehicle.id})`);
-            continue;
-          }
+            const error = result.reason;
 
-          await this.updateVehiclePhotos(vehicle.id, photoUrls);
-          updated += 1;
-        } catch (error) {
-          if (isStoppedError(error)) {
-            throw error;
-          }
+            if (!isStoppedError(error)) {
+              consecutiveFailures += 1;
+              console.warn(`[feed-image-fetcher] Failed: ${vehicleName}: ${error.message}`);
 
-          skipped += 1;
-          console.warn(
-            `[feed-image-fetcher] Failed for ${vehicleName} (${vehicle.id}): ${error.message}`
+              if (isNetworkError(error)) {
+                this._resetSession();
+              }
+            }
+          }
+        }
+
+        // Log progress every few chunks
+        if (completed % 15 === 0 || completed === vehicles.length) {
+          console.log(
+            `[feed-image-fetcher] Progress: ${updated} updated, ${skipped} skipped of ${vehicles.length}`
           );
         }
+
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          console.error(
+            `[feed-image-fetcher] ${MAX_CONSECUTIVE_FAILURES} consecutive failures — stopping`
+          );
+          this._resetSession();
+          // Extra long pause then try to continue with fresh session
+          await delay(NETWORK_ERROR_PAUSE_MS);
+          consecutiveFailures = 0;
+        }
+
+        // Jittered delay between chunks
+        if (i + CONCURRENCY < vehicles.length && !this.stopped) {
+          await delay(jitter(BASE_DELAY_MS));
+        }
       }
+
+      console.log(
+        `[feed-image-fetcher] Complete: ${updated} updated, ${skipped} skipped of ${vehicles.length}`
+      );
 
       this.sendEvent('image-fetch-complete', {
         feedId: feed?.id,
@@ -309,11 +379,45 @@ class FeedImageFetcher {
       });
       throw error;
     } finally {
-      if (this.win && !this.win.isDestroyed()) {
-        this.win.destroy();
-      }
-      this.win = null;
+      this._clearSession();
     }
+  }
+
+  /**
+   * Fetch and save photos for a single vehicle.
+   * Returns the number of photos found.
+   */
+  async _processOneVehicle(vehicle) {
+    this.ensureActive();
+
+    const detailUrl = vehicle.dealerUrl;
+    if (!detailUrl) return 0;
+
+    const fullUrl = detailUrl.startsWith('http')
+      ? detailUrl
+      : `https://www.cars.com${detailUrl}`;
+
+    const ses = this._getSession();
+    this._vehiclesSinceRotate += 1;
+
+    const response = await electronFetch(fullUrl, ses);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    // Detect challenge/captcha pages
+    if (response.body.includes('Client Challenge') ||
+        response.body.includes('Enter the characters') ||
+        response.body.includes('captcha')) {
+      throw new Error('Challenge page detected');
+    }
+
+    const photos = extractPhotos(response.body);
+    if (photos.length === 0) return 0;
+
+    await this.updateVehiclePhotos(vehicle.id, photos);
+    return photos.length;
   }
 
   async fetchVehiclesMissingPhotos(feedId) {
@@ -338,10 +442,9 @@ class FeedImageFetcher {
       const pageVehicles = Array.isArray(data?.vehicles) ? data.vehicles : [];
 
       for (const vehicle of pageVehicles) {
-        vehicles.push({
-          ...vehicle,
-          listingId: getListingIdFromDealerUrl(vehicle?.dealerUrl),
-        });
+        if (vehicle?.dealerUrl) {
+          vehicles.push(vehicle);
+        }
       }
 
       if (pageVehicles.length < VEHICLE_PAGE_SIZE) {
@@ -352,217 +455,6 @@ class FeedImageFetcher {
     }
 
     return vehicles;
-  }
-
-  sortVehiclesBySearchPage(vehicles) {
-    vehicles.sort((a, b) => {
-      const aPage = this.listingPageMap.get(a.listingId) || Number.MAX_SAFE_INTEGER;
-      const bPage = this.listingPageMap.get(b.listingId) || Number.MAX_SAFE_INTEGER;
-      if (aPage !== bPage) return aPage - bPage;
-      return getVehicleName(a).localeCompare(getVehicleName(b));
-    });
-  }
-
-  async loadSearchPage(page, { retries = 3 } = {}) {
-    this.ensureActive();
-    this.currentSearchPage = page;
-    const searchUrl = buildPaginatedUrl(this.feed.feedUrl, page);
-
-    for (let attempt = 1; attempt <= retries; attempt += 1) {
-      try {
-        await this.win.loadURL(searchUrl);
-        await this.waitForSearchPage();
-        return;
-      } catch (error) {
-        if (isStoppedError(error)) throw error;
-        if (attempt >= retries) throw error;
-        const backoff = RATE_LIMIT_MS * attempt;
-        console.warn(
-          `[feed-image-fetcher] Page ${page} load failed (attempt ${attempt}/${retries}): ${error.message} — retrying in ${backoff}ms`
-        );
-        await delay(backoff);
-      }
-    }
-  }
-
-  async waitForSearchPage() {
-    const startedAt = Date.now();
-
-    while (Date.now() - startedAt < SEARCH_PAGE_TIMEOUT_MS) {
-      this.ensureActive();
-
-      const info = await this.executeJavaScript(SEARCH_PAGE_INFO_JS);
-      if (Number(info?.listingCount) > 0) {
-        return info;
-      }
-
-      await delay(POLL_INTERVAL_MS);
-    }
-
-    throw new Error(`Timed out waiting for search page ${this.currentSearchPage}`);
-  }
-
-  async buildListingPageMap() {
-    const totalPages = await this.detectSearchPageCount();
-
-    for (let page = 1; page <= totalPages; page += 1) {
-      this.ensureActive();
-
-      if (page !== this.currentSearchPage) {
-        // Rate limit between search page loads to avoid anti-bot blocking
-        await delay(RATE_LIMIT_MS);
-        try {
-          await this.loadSearchPage(page);
-        } catch (error) {
-          if (isStoppedError(error)) throw error;
-          console.warn(
-            `[feed-image-fetcher] Skipping search page ${page}/${totalPages}: ${error.message}`
-          );
-          continue;
-        }
-      }
-
-      const listingIds = await this.executeJavaScript(SEARCH_PAGE_LISTINGS_JS);
-      for (const listingId of Array.isArray(listingIds) ? listingIds : []) {
-        if (!this.listingPageMap.has(listingId)) {
-          this.listingPageMap.set(listingId, page);
-        }
-      }
-    }
-  }
-
-  async detectSearchPageCount() {
-    try {
-      const count = await this.executeJavaScript(SEARCH_PAGE_COUNT_JS);
-      const parsed = Number.parseInt(String(count), 10);
-      if (!Number.isFinite(parsed) || parsed < 2) return 1;
-      return Math.min(parsed, MAX_SEARCH_PAGES);
-    } catch (error) {
-      console.warn('[feed-image-fetcher] Failed to detect search page count:', error.message);
-      return 1;
-    }
-  }
-
-  async fetchVehiclePhotos(vehicle) {
-    const listingId = vehicle?.listingId;
-    if (!listingId) {
-      throw new Error('Missing listing id');
-    }
-
-    const targetPage = this.listingPageMap.get(listingId);
-    if (!targetPage) {
-      throw new Error(`Listing ${listingId} not found on search pages`);
-    }
-
-    if (targetPage !== this.currentSearchPage) {
-      await this.loadSearchPage(targetPage);
-    }
-
-    try {
-      await this.rateLimitBeforeDetailLoad();
-
-      const clicked = await this.executeJavaScript(`
-        (function() {
-          var links = document.querySelectorAll('a.shop-card-link[href*="vehicledetail"]');
-          var listingId = ${escapeForJavaScript(listingId)};
-          for (var i = 0; i < links.length; i += 1) {
-            var href = links[i].href || '';
-            if (!href.includes(listingId)) continue;
-            links[i].click();
-            return true;
-          }
-          return false;
-        })()
-      `);
-
-      if (!clicked) {
-        throw new Error(`Listing ${listingId} not clickable on page ${targetPage}`);
-      }
-
-      this.lastDetailLoadAt = Date.now();
-      await this.waitForDetailPage(listingId);
-      const photoUrls = await this.collectDetailImages();
-      await this.navigateBackToSearchPage();
-      return photoUrls;
-    } catch (error) {
-      if (isStoppedError(error)) {
-        throw error;
-      }
-
-      try {
-        await this.loadSearchPage(targetPage);
-      } catch (resetError) {
-        if (isStoppedError(resetError)) {
-          throw resetError;
-        }
-      }
-
-      throw error;
-    }
-  }
-
-  async rateLimitBeforeDetailLoad() {
-    const elapsed = Date.now() - this.lastDetailLoadAt;
-    if (elapsed < RATE_LIMIT_MS) {
-      await delay(RATE_LIMIT_MS - elapsed);
-    }
-  }
-
-  async waitForDetailPage(listingId) {
-    const startedAt = Date.now();
-
-    while (Date.now() - startedAt < DETAIL_PAGE_TIMEOUT_MS) {
-      this.ensureActive();
-
-      const info = await this.executeJavaScript(DETAIL_PAGE_INFO_JS);
-      const href = String(info?.href || '');
-      const imageCount = Number(info?.imageCount || 0);
-
-      if (href.includes(listingId) && imageCount > 0) {
-        return info;
-      }
-
-      await delay(POLL_INTERVAL_MS);
-    }
-
-    throw new Error(`Timed out waiting for detail page ${listingId}`);
-  }
-
-  async collectDetailImages() {
-    let bestUrls = [];
-
-    for (let pass = 0; pass < DETAIL_SCROLL_PASSES; pass += 1) {
-      this.ensureActive();
-
-      await this.executeJavaScript('window.scrollTo(0, document.body.scrollHeight)');
-      await delay(DETAIL_SCROLL_DELAY_MS);
-
-      const urls = await this.executeJavaScript(DETAIL_IMAGES_JS);
-      const normalized = Array.isArray(urls) ? urls : [];
-
-      if (normalized.length > bestUrls.length) {
-        bestUrls = normalized;
-      } else if (normalized.length > 0 && normalized.length === bestUrls.length) {
-        break;
-      }
-    }
-
-    return bestUrls;
-  }
-
-  async navigateBackToSearchPage() {
-    this.ensureActive();
-
-    try {
-      await this.executeJavaScript('window.history.back()');
-      await this.waitForSearchPage();
-    } catch (error) {
-      if (isStoppedError(error)) throw error;
-      await this.loadSearchPage(this.currentSearchPage);
-      return;
-    }
-
-    await delay(1000);
   }
 
   async updateVehiclePhotos(vehicleId, photos) {
@@ -590,6 +482,8 @@ class FeedImageFetcher {
     }
   }
 }
+
+// --- Job queue (same interface as before) ---
 
 const pendingJobs = [];
 let activeJob = null;

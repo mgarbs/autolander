@@ -111,7 +111,7 @@ model User {
 model Vehicle {
   id                   String        @id @default(uuid())
   orgId                String
-  vin                  String
+  vin                  String?
   year                 Int
   make                 String
   model                String

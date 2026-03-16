@@ -56,6 +56,10 @@ function normalizeVehicle(vehicle) {
   };
 }
 
+function getVehicleCompositeKey(vehicle) {
+  return [vehicle.year, vehicle.make, vehicle.model].join('|');
+}
+
 module.exports = {
   async syncFeed(feed, prisma) {
     const parsedVehicles = await parseFeed(feed.feedUrl, feed.feedType);
@@ -87,22 +91,36 @@ async function processVehicles(feed, parsedVehicles, prisma) {
 
     vehiclesFound = Array.isArray(parsedVehicles) ? parsedVehicles.length : 0;
     const seenVins = new Set();
+    const seenKeys = new Set();
 
     for (const rawVehicle of parsedVehicles || []) {
       const vehicle = normalizeVehicle(rawVehicle || {});
-      const hasIdentity = Boolean(vehicle.vin) && Boolean(vehicle.year && vehicle.make && vehicle.model);
+      const hasIdentity = Boolean(vehicle.vin) || Boolean(vehicle.year && vehicle.make && vehicle.model);
 
       if (!hasIdentity) {
         continue;
       }
-      seenVins.add(vehicle.vin);
+      if (vehicle.vin !== null) {
+        seenVins.add(vehicle.vin);
+      } else {
+        seenKeys.add(getVehicleCompositeKey(vehicle));
+      }
 
       try {
-        const existing = await prisma.vehicle.findFirst({
-          where: {
+        const where = vehicle.vin !== null
+          ? {
             orgId: feed.orgId,
             vin: vehicle.vin,
-          },
+          }
+          : {
+            orgId: feed.orgId,
+            year: vehicle.year,
+            make: vehicle.make,
+            model: vehicle.model,
+          };
+
+        const existing = await prisma.vehicle.findFirst({
+          where,
         });
 
         if (!existing) {
@@ -219,7 +237,10 @@ async function processVehicles(feed, parsedVehicles, prisma) {
         where: {
           orgId: feed.orgId,
           feedId: feed.id,
-          vin: { notIn: seenVinList },
+          AND: [
+            { vin: { not: null } },
+            { vin: { notIn: seenVinList } },
+          ],
           status: { not: 'ARCHIVED' },
           fbPosted: true,
         },

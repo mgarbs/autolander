@@ -1,55 +1,240 @@
 'use strict';
 
 /**
- * Feed Drip Crawler — "sucker fish" background photo fetcher.
+ * Feed Drip Crawler — background photo fetcher using Electron's net module.
  *
- * Fetches vehicle detail pages via plain HTTP + cheerio (no browser needed).
- * Cars.com serves full image URLs in server-rendered HTML, so we don't need
- * Electron BrowserWindow or Puppeteer — just fetch and parse.
+ * Uses Chromium's networking stack (via Electron's net module) instead of
+ * Node.js fetch() to avoid TLS fingerprint-based bot detection.
+ *
+ * Why this matters:
+ *   Node.js fetch() (undici) produces a JA3/JA4 TLS fingerprint that differs
+ *   between macOS and Windows builds. Cars.com fingerprints the Mac signature
+ *   and blocks it, returning empty/challenge pages. Electron's net module uses
+ *   Chromium's TLS stack which has the same fingerprint as a real browser,
+ *   passing through bot detection on all platforms.
+ *
+ * Stealth features:
+ *   - Chromium TLS fingerprint (not Node.js undici)
+ *   - Randomized jitter between requests (no fixed-interval patterns)
+ *   - Session rotation every N vehicles (fresh cookies + TLS state)
+ *   - Full browser-like request headers (Sec-Ch-Ua, Sec-Fetch-*, etc.)
+ *   - Extended pause + session reset on network errors / rate limiting
+ *   - Graceful degradation (never fully aborts, just backs off)
  *
  * Flow:
  *   1. Query API for a small batch of vehicles missing photos
- *   2. For each vehicle, HTTP-fetch its detail page via dealerUrl
+ *   2. For each vehicle, fetch its detail page via Electron net module
  *   3. Parse HTML with cheerio to extract photo URLs
  *   4. Save photos immediately via API
- *   5. Wait between vehicles to avoid rate limits
+ *   5. Wait between vehicles with randomized jitter
  *   6. When batch is done, wait and check for more
  *   7. When all vehicles have photos, idle and check periodically
  */
 
+const { net, session } = require('electron');
 const cheerio = require('cheerio');
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-// Timing — slow and steady to avoid rate limits
-const BETWEEN_VEHICLES_MS = 5_000;        // 5s between each vehicle (faster since no browser)
-const BETWEEN_BATCHES_MS = 2 * 60_000;    // 2 min between batches
-const IDLE_CHECK_MS = 10 * 60_000;        // 10 min when nothing to do
-const FETCH_TIMEOUT_MS = 20_000;          // 20s per HTTP request
-const BATCH_SIZE = 10;                    // vehicles per batch (can be bigger without browser)
+// --- Timing ---
+// Base delays get jitter applied (0.5x to 1.5x), so 5s becomes 2.5–7.5s
+const BASE_BETWEEN_VEHICLES_MS = 5_000;
+const BETWEEN_BATCHES_MS = 2 * 60_000;      // 2 min between batches
+const IDLE_CHECK_MS = 10 * 60_000;           // 10 min when nothing to do
+const FETCH_TIMEOUT_MS = 25_000;             // 25s per request
+const NETWORK_ERROR_PAUSE_MS = 30_000;       // 30s pause after network error
+const BATCH_SIZE = 10;
+const MAX_CONSECUTIVE_FAILURES = 8;
+const SESSION_ROTATE_EVERY = 20;             // fresh session every N vehicles
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Randomized jitter — returns base * [0.5, 1.5).
+ * Prevents fixed-interval request patterns that trigger bot detection.
+ */
+function jitter(baseMs) {
+  return Math.round(baseMs * (0.5 + Math.random()));
+}
+
+/**
+ * Fetch a URL using Electron's net module (Chromium TLS fingerprint).
+ *
+ * This is the core Mac fix. Electron's net.request() goes through Chromium's
+ * network stack, producing the same JA3/JA4 TLS fingerprint as Chrome.
+ * Cars.com's bot detection sees a real browser, not a Node.js bot.
+ */
+function electronFetch(url, ses) {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      try { request.abort(); } catch {}
+      reject(new Error(`Timed out after ${FETCH_TIMEOUT_MS}ms`));
+    }, FETCH_TIMEOUT_MS);
+
+    const request = net.request({
+      url,
+      method: 'GET',
+      session: ses,
+      useSessionCookies: true,
+    });
+
+    // Full set of browser-like headers — matches a real Chrome 120 request
+    request.setHeader('User-Agent', UA);
+    request.setHeader('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8');
+    request.setHeader('Accept-Language', 'en-US,en;q=0.9');
+    request.setHeader('Accept-Encoding', 'gzip, deflate, br');
+    request.setHeader('Cache-Control', 'no-cache');
+    request.setHeader('Sec-Ch-Ua', '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"');
+    request.setHeader('Sec-Ch-Ua-Mobile', '?0');
+    request.setHeader('Sec-Ch-Ua-Platform', '"Windows"');
+    request.setHeader('Sec-Fetch-Dest', 'document');
+    request.setHeader('Sec-Fetch-Mode', 'navigate');
+    request.setHeader('Sec-Fetch-Site', 'none');
+    request.setHeader('Sec-Fetch-User', '?1');
+    request.setHeader('Upgrade-Insecure-Requests', '1');
+
+    request.on('response', (response) => {
+      const chunks = [];
+
+      response.on('data', (chunk) => {
+        chunks.push(chunk);
+      });
+
+      response.on('end', () => {
+        clearTimeout(timeoutId);
+        const body = Buffer.concat(chunks).toString('utf8');
+        resolve({
+          ok: response.statusCode >= 200 && response.statusCode < 300,
+          status: response.statusCode,
+          body,
+        });
+      });
+
+      response.on('error', (error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      });
+    });
+
+    request.on('error', (error) => {
+      clearTimeout(timeoutId);
+      reject(error);
+    });
+
+    request.end();
+  });
+}
+
+/**
+ * Check if a URL is a valid vehicle photo (not a logo, icon, or UI image).
+ */
+function isVehiclePhoto(src) {
+  if (!src) return false;
+  if (src.includes('dealer_media')) return false;
+  if (src.includes('static/app-images')) return false;
+  if (src.includes('placeholder')) return false;
+  if (src.includes('no-image')) return false;
+  if (src.includes('logo')) return false;
+  if (src.includes('favicon')) return false;
+  if (/\.svg(?:\?|#|$)/i.test(src)) return false;
+  if (/\b(?:1x1|spacer|pixel|blank)\b/i.test(src)) return false;
+  return true;
+}
+
+/**
+ * Upgrade cstatic-images.com thumbnails to full size.
+ */
+function upgradeSize(src) {
+  if (typeof src !== 'string') return src;
+  return src.replace(
+    /\/(?:small|medium|large|xlarge)\/in\/v2\//i,
+    '/xxlarge/in/v2/'
+  );
+}
+
+/**
+ * Extract photo URLs from vehicle detail page HTML.
+ *
+ * Searches multiple sources:
+ *   1. <img> tags with src, data-src, data-original, data-lazy-src
+ *   2. <source srcset> elements (responsive images)
+ *   3. JSON-LD structured data (schema.org Vehicle/Product images)
+ *   4. Open Graph meta tags (og:image)
+ *
+ * Supports both Cars.com (cstatic-images.com) and generic dealer sites.
+ */
 function extractPhotos(html) {
   const $ = cheerio.load(html);
   const urls = [];
   const seen = new Set();
 
-  $('img[src*="cstatic-images.com"]').each((_, el) => {
-    const src = $(el).attr('src') || '';
-    if (!src) return;
-    if (src.includes('dealer_media')) return;
-    if (src.includes('static/app-images')) return;
-    if (/\.svg(?:\?|#|$)/i.test(src)) return;
-    if (seen.has(src)) return;
-    seen.add(src);
-    urls.push(src);
+  function add(src) {
+    if (!src || !isVehiclePhoto(src)) return;
+    const upgraded = upgradeSize(src.trim());
+    if (!upgraded || seen.has(upgraded)) return;
+    seen.add(upgraded);
+    urls.push(upgraded);
+  }
+
+  // 1. <img> tags — check multiple attributes for lazy-loaded images
+  $('img').each((_, el) => {
+    const node = $(el);
+    add(node.attr('src'));
+    add(node.attr('data-src'));
+    add(node.attr('data-original'));
+    add(node.attr('data-lazy-src'));
+    add(node.attr('data-hi-res-src'));
   });
 
-  return urls;
+  // 2. <source srcset> — responsive image sets
+  $('source[srcset]').each((_, el) => {
+    const srcset = $(el).attr('srcset') || '';
+    for (const part of srcset.split(',')) {
+      const src = part.trim().split(/\s+/)[0];
+      add(src);
+    }
+  });
+
+  // 3. JSON-LD structured data
+  $('script[type="application/ld+json"]').each((_, el) => {
+    try {
+      const data = JSON.parse($(el).contents().text());
+      const images = Array.isArray(data.image) ? data.image : data.image ? [data.image] : [];
+      for (const img of images) {
+        add(typeof img === 'string' ? img : img?.url || img?.contentUrl);
+      }
+    } catch {}
+  });
+
+  // 4. Open Graph meta (og:image)
+  $('meta[property="og:image"]').each((_, el) => {
+    add($(el).attr('content'));
+  });
+
+  // For Cars.com, only keep cstatic-images.com URLs (filter out ads, tracking pixels, etc.)
+  const cstaticUrls = urls.filter((u) => u.includes('cstatic-images.com'));
+  return cstaticUrls.length > 0 ? cstaticUrls : urls;
+}
+
+function isNetworkError(error) {
+  if (!error) return false;
+  const msg = String(error.message || '');
+  return (
+    msg.includes('ERR_FAILED') ||
+    msg.includes('ERR_CONNECTION') ||
+    msg.includes('ERR_SSL') ||
+    msg.includes('ERR_NETWORK') ||
+    msg.includes('net_error') ||
+    msg.includes('Timed out') ||
+    msg.includes('ECONNREFUSED') ||
+    msg.includes('ECONNRESET') ||
+    msg.includes('ETIMEDOUT') ||
+    msg.includes('HTTP 403') ||
+    msg.includes('HTTP 429')
+  );
 }
 
 class FeedDripCrawler {
@@ -59,6 +244,8 @@ class FeedDripCrawler {
     this.running = false;
     this.stopped = false;
     this.stats = { processed: 0, photosFound: 0, failed: 0 };
+    this._session = null;
+    this._vehiclesSinceRotate = 0;
   }
 
   start(serverUrl, accessToken) {
@@ -73,15 +260,46 @@ class FeedDripCrawler {
     this.accessToken = accessToken;
     this.stopped = false;
     this.stats = { processed: 0, photosFound: 0, failed: 0 };
+    this._vehiclesSinceRotate = 0;
+    this._session = null;
 
-    console.log('[drip-crawler] Starting background photo crawler (HTTP mode)');
+    console.log('[drip-crawler] Starting background photo crawler (Electron net mode — Chromium TLS)');
     this._runLoop();
   }
 
   stop() {
     this.stopped = true;
     this.running = false;
+    this._session = null;
     console.log('[drip-crawler] Stopped');
+  }
+
+  /**
+   * Get or create an Electron session for HTTP requests.
+   * Rotates periodically to avoid session-level rate limiting.
+   */
+  _getSession() {
+    if (!this._session || this._vehiclesSinceRotate >= SESSION_ROTATE_EVERY) {
+      this._clearSession();
+      const partition = `drip-crawler-${Date.now()}`;
+      this._session = session.fromPartition(partition, { cache: false });
+      this._session.setUserAgent(UA);
+      this._vehiclesSinceRotate = 0;
+      console.log('[drip-crawler] Rotated to fresh session');
+    }
+    return this._session;
+  }
+
+  _resetSession() {
+    this._clearSession();
+    this._vehiclesSinceRotate = 0;
+  }
+
+  _clearSession() {
+    if (this._session) {
+      this._session.clearStorageData().catch(() => {});
+      this._session = null;
+    }
   }
 
   _buildApiUrl(pathname) {
@@ -99,7 +317,7 @@ class FeedDripCrawler {
     if (this.running) return;
     this.running = true;
 
-    // Initial delay — let the app settle
+    // Initial delay — let the app settle after login
     await delay(30_000);
 
     while (!this.stopped) {
@@ -116,43 +334,69 @@ class FeedDripCrawler {
 
         let updated = 0;
         let skipped = 0;
+        let consecutiveFailures = 0;
 
         for (const vehicle of vehicles) {
           if (this.stopped) break;
 
-          const name = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || vehicle.vin || 'Vehicle';
+          const name = [vehicle.year, vehicle.make, vehicle.model]
+            .filter(Boolean).join(' ') || vehicle.vin || 'Vehicle';
 
           try {
             const photos = await this._fetchPhotosForVehicle(vehicle);
+            this._vehiclesSinceRotate += 1;
 
             if (photos.length > 0) {
               await this._savePhotos(vehicle.id, photos);
               updated += 1;
+              consecutiveFailures = 0;
               this.stats.photosFound += photos.length;
               console.log(`[drip-crawler] ${name}: ${photos.length} photos saved`);
             } else {
               skipped += 1;
-              console.log(`[drip-crawler] ${name}: no photos found`);
+              consecutiveFailures += 1;
+              console.log(`[drip-crawler] ${name}: no photos found on detail page`);
             }
           } catch (error) {
             skipped += 1;
+            consecutiveFailures += 1;
             this.stats.failed += 1;
             console.warn(`[drip-crawler] ${name}: ${error.message}`);
+
+            // Network / rate-limit errors — rotate session + extended pause
+            if (isNetworkError(error)) {
+              console.warn('[drip-crawler] Network error detected — rotating session, pausing');
+              this._resetSession();
+              if (!this.stopped) await delay(jitter(NETWORK_ERROR_PAUSE_MS));
+              consecutiveFailures = Math.max(0, consecutiveFailures - 1); // don't count network issues toward abort
+            }
+
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+              console.error(
+                `[drip-crawler] ${MAX_CONSECUTIVE_FAILURES} consecutive failures — ` +
+                'pausing batch (will retry next cycle)'
+              );
+              this._resetSession();
+              break;
+            }
           }
 
           this.stats.processed += 1;
 
-          if (!this.stopped) await delay(BETWEEN_VEHICLES_MS);
+          // Randomized delay — jitter makes the pattern look human
+          if (!this.stopped) await delay(jitter(BASE_BETWEEN_VEHICLES_MS));
         }
 
         console.log(
           `[drip-crawler] Batch done: ${updated} updated, ${skipped} skipped — ` +
-          `lifetime: ${this.stats.processed} processed, ${this.stats.photosFound} photos, ${this.stats.failed} failed`
+          `lifetime: ${this.stats.processed} processed, ` +
+          `${this.stats.photosFound} photos, ${this.stats.failed} failed`
         );
 
         if (!this.stopped) await delay(BETWEEN_BATCHES_MS);
       } catch (error) {
         console.error('[drip-crawler] Loop error:', error.message);
+        this._resetSession();
         if (!this.stopped) await delay(BETWEEN_BATCHES_MS);
       }
     }
@@ -160,6 +404,10 @@ class FeedDripCrawler {
     this.running = false;
   }
 
+  /**
+   * Fetch vehicles that need photos from the API.
+   * Uses Node.js fetch() for the internal API call (localhost, no TLS issue).
+   */
   async _fetchVehiclesMissingPhotos() {
     const url = this._buildApiUrl(
       `/api/vehicles?missingPhotos=true&status=ACTIVE&limit=${BATCH_SIZE}&offset=0`
@@ -174,6 +422,10 @@ class FeedDripCrawler {
     return Array.isArray(data?.vehicles) ? data.vehicles : [];
   }
 
+  /**
+   * Fetch photos for a single vehicle by loading its detail page.
+   * Uses Electron's net module (Chromium TLS) to avoid Mac bot detection.
+   */
   async _fetchPhotosForVehicle(vehicle) {
     if (!vehicle.dealerUrl) {
       throw new Error('No dealer URL');
@@ -183,19 +435,29 @@ class FeedDripCrawler {
       ? vehicle.dealerUrl
       : `https://www.cars.com${vehicle.dealerUrl}`;
 
-    const response = await fetch(detailUrl, {
-      headers: { 'User-Agent': UA },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
+    const ses = this._getSession();
+    const response = await electronFetch(detailUrl, ses);
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status} fetching ${detailUrl}`);
+      throw new Error(`HTTP ${response.status} fetching detail page`);
     }
 
-    const html = await response.text();
-    return extractPhotos(html);
+    // Check for challenge/captcha pages (cars.com bot detection)
+    if (response.body.includes('Client Challenge') ||
+        response.body.includes('Enter the characters') ||
+        response.body.includes('captcha')) {
+      console.warn('[drip-crawler] Challenge page detected — rotating session');
+      this._resetSession();
+      throw new Error('Challenge page detected (rate limited)');
+    }
+
+    return extractPhotos(response.body);
   }
 
+  /**
+   * Save photo URLs to the API.
+   * Uses Node.js fetch() for the internal API call (localhost, no TLS issue).
+   */
   async _savePhotos(vehicleId, photos) {
     const response = await fetch(
       this._buildApiUrl(`/api/vehicles/${encodeURIComponent(vehicleId)}/photos`),

@@ -431,15 +431,32 @@ function scrapeVehicleCards(html, feedUrl) {
         cleanText(node.attr('aria-label')) ||
         cleanText(node.text());
 
+      // Collect image URLs from multiple attributes — catches lazy-loaded
+      // images that only populate data-src, data-original, or srcset
+      const photoUrls = [];
+      node.find('img').each((_, img) => {
+        const imgNode = $(img);
+        const src = imgNode.attr('data-src')
+          || imgNode.attr('data-original')
+          || imgNode.attr('data-lazy-src')
+          || imgNode.attr('src');
+        if (src) photoUrls.push(src);
+      });
+      // Also check <source srcset> inside <picture> elements
+      node.find('source[srcset]').each((_, source) => {
+        const srcset = $(source).attr('srcset') || '';
+        for (const part of srcset.split(',')) {
+          const src = part.trim().split(/\s+/)[0];
+          if (src) photoUrls.push(src);
+        }
+      });
+
       const raw = {
         vin: node.attr('data-vin') || extractVin(node.text()),
         title,
         price: node.find('.primary-price, .price').first().text(),
         mileage: node.find('.mileage, .miles').first().text(),
-        photos: node
-          .find('img[src], img[data-src]')
-          .map((i, img) => $(img).attr('data-src') || $(img).attr('src'))
-          .get(),
+        photos: photoUrls,
         url: node.find('a[href]').first().attr('href'),
       };
 
