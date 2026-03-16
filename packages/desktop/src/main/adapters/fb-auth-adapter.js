@@ -12,6 +12,16 @@ class FbAuthAdapter {
     this.mainWindow = mainWindow;
   }
 
+  setSalespersonId(id) {
+    if (this.salespersonId === id) return;
+    // Destroy active login session — it's using the old profile
+    if (this.activeSession) {
+      this.activeSession.destroy();
+      this.activeSession = null;
+    }
+    this.salespersonId = id;
+  }
+
   _send(channel, payload) {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.send(channel, payload);

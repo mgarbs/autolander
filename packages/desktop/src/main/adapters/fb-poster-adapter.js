@@ -23,6 +23,17 @@ class FbPosterAdapter {
     }
   }
 
+  async setSalespersonId(id) {
+    if (this.salespersonId === id) return;
+    // Tear down cached Puppeteer — it holds the old user's session cookies
+    this.cancelAssistedPost();
+    if (this.poster) {
+      await this.poster.close().catch(() => {});
+      this.poster = null;
+    }
+    this.salespersonId = id;
+  }
+
   _send(channel, payload) {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.send(channel, payload);

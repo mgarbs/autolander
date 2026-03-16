@@ -17,6 +17,17 @@ class FbInboxAdapter {
     this.mainWindow = mainWindow;
   }
 
+  async setSalespersonId(id) {
+    if (this.salespersonId === id) return;
+    // Tear down cached Puppeteer — it holds the old user's session cookies
+    if (this.monitor) {
+      await this.monitor.close().catch(() => {});
+      this.monitor = null;
+    }
+    this.threadCache.clear();
+    this.salespersonId = id;
+  }
+
   async _getMonitor() {
     if (this.monitor && this.monitor.isAlive()) return this.monitor;
     if (this.monitor) {

@@ -13,11 +13,62 @@ let fbPosterAdapter = null;
 let fbInboxAdapter = null;
 let fbAuthAdapter = null;
 let feedAutoSync = null;
-let agentCredentials = { serverUrl: '', accessToken: '' };
+let agentCredentials = { serverUrl: '', accessToken: '', userId: '' };
 let inboxPolling = null;
 
 const DATA_DIR = path.join(os.homedir(), '.autolander', 'data');
 process.env.AUTO_SALES_DATA_DIR = DATA_DIR;
+
+/**
+ * Decode a JWT payload without verification (client-side, we trust the token).
+ * Extracts the user ID to key FB sessions per-user instead of 'default'.
+ */
+function getUserIdFromToken(token) {
+  if (!token) return '';
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
+    return payload.sub || '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Get the current salesperson ID — the AutoLander user ID, falling back to
+ * 'default' only if no user is logged in. This keys FB sessions per-user
+ * so multiple users on the same machine each get their own session.
+ */
+function getSalespersonId() {
+  return agentCredentials.userId || 'default';
+}
+
+/**
+ * Update all adapter instances with a new salespersonId. Called on login
+ * when the user changes. Tears down any cached Puppeteer sessions that
+ * hold the previous user's cookies.
+ */
+async function updateAdapterSalespersonId(id) {
+  const updates = [];
+  if (ipcFbAuthAdapter && typeof ipcFbAuthAdapter.setSalespersonId === 'function') {
+    ipcFbAuthAdapter.setSalespersonId(id);
+  }
+  if (ipcFbPosterAdapter && typeof ipcFbPosterAdapter.setSalespersonId === 'function') {
+    updates.push(ipcFbPosterAdapter.setSalespersonId(id));
+  }
+  if (ipcFbInboxAdapter && typeof ipcFbInboxAdapter.setSalespersonId === 'function') {
+    updates.push(ipcFbInboxAdapter.setSalespersonId(id));
+  }
+  if (fbPosterAdapter && fbPosterAdapter !== ipcFbPosterAdapter && typeof fbPosterAdapter.setSalespersonId === 'function') {
+    updates.push(fbPosterAdapter.setSalespersonId(id));
+  }
+  if (fbInboxAdapter && fbInboxAdapter !== ipcFbInboxAdapter && typeof fbInboxAdapter.setSalespersonId === 'function') {
+    updates.push(fbInboxAdapter.setSalespersonId(id));
+  }
+  if (fbAuthAdapter && fbAuthAdapter !== ipcFbAuthAdapter && typeof fbAuthAdapter.setSalespersonId === 'function') {
+    fbAuthAdapter.setSalespersonId(id);
+  }
+  await Promise.allSettled(updates);
+}
 
 let ipcFbAuthAdapter = null;
 let ipcFbPosterAdapter = null;
@@ -28,7 +79,7 @@ function getIpcFbAuthAdapter() {
     const { FbAuthAdapter } = require('./adapters/fb-auth-adapter');
     ipcFbAuthAdapter = new FbAuthAdapter({
       dataDir: DATA_DIR,
-      salespersonId: 'default',
+      salespersonId: getSalespersonId(),
       mainWindow: getMainWindow(),
     });
   }
@@ -41,7 +92,7 @@ function getIpcFbPosterAdapter() {
     const { FbPosterAdapter } = require('./adapters/fb-poster-adapter');
     ipcFbPosterAdapter = new FbPosterAdapter({
       dataDir: DATA_DIR,
-      salespersonId: 'default',
+      salespersonId: getSalespersonId(),
       mainWindow: getMainWindow(),
       apiUrl: agentCredentials.serverUrl,
       authToken: agentCredentials.accessToken,
@@ -65,7 +116,7 @@ function getIpcFbInboxAdapter() {
     const { FbInboxAdapter } = require('./adapters/fb-inbox-adapter');
     ipcFbInboxAdapter = new FbInboxAdapter({
       dataDir: DATA_DIR,
-      salespersonId: 'default',
+      salespersonId: getSalespersonId(),
       mainWindow: getMainWindow(),
     });
   }
@@ -291,6 +342,8 @@ async function fetchFeedHtmlWithBrowser(url, options = {}) {
 }
 
 function ensureAgentInfrastructure() {
+  const spId = getSalespersonId();
+
   if (fbPosterAdapter && typeof fbPosterAdapter.setApiCredentials === 'function') {
     fbPosterAdapter.setApiCredentials(agentCredentials.serverUrl, agentCredentials.accessToken);
   }
@@ -309,6 +362,7 @@ function ensureAgentInfrastructure() {
 
     fbPosterAdapter = fbPosterAdapter || new FbPosterAdapter({
       dataDir: DATA_DIR,
+      salespersonId: spId,
       mainWindow: getMainWindow(),
       apiUrl: agentCredentials.serverUrl,
       authToken: agentCredentials.accessToken,
@@ -316,14 +370,30 @@ function ensureAgentInfrastructure() {
     if (typeof fbPosterAdapter.setApiCredentials === 'function') {
       fbPosterAdapter.setApiCredentials(agentCredentials.serverUrl, agentCredentials.accessToken);
     }
-    fbInboxAdapter = fbInboxAdapter || new FbInboxAdapter({ dataDir: DATA_DIR, mainWindow: getMainWindow() });
-    fbAuthAdapter = fbAuthAdapter || new FbAuthAdapter({ dataDir: DATA_DIR, mainWindow: getMainWindow() });
+    fbInboxAdapter = fbInboxAdapter || new FbInboxAdapter({ dataDir: DATA_DIR, salespersonId: spId, mainWindow: getMainWindow() });
+    fbAuthAdapter = fbAuthAdapter || new FbAuthAdapter({ dataDir: DATA_DIR, salespersonId: spId, mainWindow: getMainWindow() });
     commandRouter = new CommandRouter({
       agentClient,
       fbPosterAdapter,
       fbInboxAdapter,
       fbAuthAdapter,
     });
+  }
+}
+
+/**
+ * Validate the local FB session for the current user.
+ * Returns true only if the session file exists on THIS device with valid cookies.
+ * Does not trust any cloud flag — checks local disk reality.
+ */
+function validateLocalFbSession() {
+  try {
+    const { FbSessionManager } = require('../../lib/fb-session-manager');
+    const manager = new FbSessionManager(getSalespersonId());
+    const status = manager.getStatus();
+    return !!(status && status.connected);
+  } catch {
+    return false;
   }
 }
 
@@ -338,8 +408,22 @@ function registerIpcHandlers(ipcMain) {
     console.log('[ipc] agent:login called, serverUrl:', serverUrl);
     const nextServerUrl = serverUrl || agentCredentials.serverUrl;
     const nextAccessToken = accessToken || agentCredentials.accessToken;
-    agentCredentials = { serverUrl: nextServerUrl, accessToken: nextAccessToken };
+    const nextUserId = getUserIdFromToken(nextAccessToken);
+    const userChanged = nextUserId && nextUserId !== agentCredentials.userId;
+    agentCredentials = { serverUrl: nextServerUrl, accessToken: nextAccessToken, userId: nextUserId };
+
+    if (nextUserId) {
+      console.log('[ipc] User ID from token:', nextUserId);
+    }
+
     ensureAgentInfrastructure();
+
+    // If the user changed, update all adapters so they use the correct
+    // per-user FB session and Chrome profile directory.
+    if (userChanged) {
+      console.log('[ipc] User changed — switching FB sessions to', nextUserId);
+      await updateAdapterSalespersonId(nextUserId);
+    }
     if (ipcFbPosterAdapter && typeof ipcFbPosterAdapter.setApiCredentials === 'function') {
       ipcFbPosterAdapter.setApiCredentials(nextServerUrl, nextAccessToken);
     }
@@ -351,6 +435,13 @@ function registerIpcHandlers(ipcMain) {
     } catch (err) {
       console.error('[ipc] agent:login connect error:', err.message);
     }
+    // Validate local FB session — check THIS device's actual cookie file,
+    // not a cloud flag. This prevents "looks connected" when the session
+    // was created on a different device.
+    const localFbValid = validateLocalFbSession();
+    updateAgentFbSessionStatus(localFbValid);
+    console.log('[ipc] Local FB session validation:', localFbValid ? 'valid' : 'not connected on this device');
+
     sendAgentStatus(agentClient.getStatus());
 
     // Start inbox polling for auto-reply
@@ -387,7 +478,7 @@ function registerIpcHandlers(ipcMain) {
       agentClient.disconnect();
       updateAgentFbSessionStatus(false);
     }
-    agentCredentials = { serverUrl: '', accessToken: '' };
+    agentCredentials = { serverUrl: '', accessToken: '', userId: '' };
     if (ipcFbPosterAdapter && typeof ipcFbPosterAdapter.setApiCredentials === 'function') {
       ipcFbPosterAdapter.setApiCredentials('', '');
     }
