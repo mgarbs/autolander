@@ -114,7 +114,12 @@ function findChromeIn(dir, maxDepth = 5, depth = 0) {
 
   for (const name of exeNames) {
     const candidate = path.join(dir, name);
-    if (fs.existsSync(candidate) && ensureExecutable(candidate)) return candidate;
+    // Must be a file, not a directory — ~/.cache/puppeteer/chrome is a
+    // DIRECTORY that fs.existsSync matches against the exe name 'chrome',
+    // causing Puppeteer to try to spawn a directory → EACCES.
+    try {
+      if (fs.statSync(candidate).isFile() && ensureExecutable(candidate)) return candidate;
+    } catch (_) {}
   }
 
   try {
