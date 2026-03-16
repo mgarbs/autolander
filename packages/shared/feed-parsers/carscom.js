@@ -73,11 +73,21 @@ function resolveUrl(value, baseUrl) {
   }
 }
 
+function upgradePhotoSize(url) {
+  // Upgrade cstatic-images.com thumbnails to full size
+  // e.g. /medium/in/v2/... → /xxlarge/in/v2/...
+  if (typeof url !== 'string') return url;
+  return url.replace(
+    /\/(?:small|medium|large|xlarge)\/in\/v2\//i,
+    '/xxlarge/in/v2/'
+  );
+}
+
 function uniqPhotos(photos) {
   const seen = new Set();
   const out = [];
   for (const p of photos) {
-    const url = resolveUrl(p, CARSCOM_BASE_URL);
+    const url = upgradePhotoSize(resolveUrl(p, CARSCOM_BASE_URL));
     if (!url || seen.has(url)) continue;
     seen.add(url);
     out.push(url);
@@ -157,9 +167,19 @@ function dedupe(vehicles) {
   return out;
 }
 
+function ymmKey(vehicle) {
+  const year = normalizeYear(vehicle?.year);
+  const make = cleanText(vehicle?.make)?.toLowerCase();
+  const model = cleanText(vehicle?.model)?.toLowerCase();
+  if (!year || !make || !model) return null;
+  return `ymm:${year}|${make}|${model}`;
+}
+
 function mergeVehicles(primaryVehicles, supplementalVehicles) {
   const merged = [];
   const byKey = new Map();
+  // Secondary index: match by year|make|model even when primary used VIN key
+  const byYmm = new Map();
 
   const upsert = (vehicle, primary) => {
     const normalized = {
@@ -175,8 +195,24 @@ function mergeVehicles(primaryVehicles, supplementalVehicles) {
 
     const existing = byKey.get(key);
     if (!existing) {
+      // For supplementals with no VIN (ymm key), also try matching by ymm
+      // against primaries that were stored by VIN key
+      if (!primary) {
+        const yk = ymmKey(normalized);
+        const ymmMatch = yk ? byYmm.get(yk) : null;
+        if (ymmMatch) {
+          ymmMatch.photos = uniqPhotos([...(ymmMatch.photos || []), ...(normalized.photos || [])]);
+          if (!ymmMatch.dealerUrl && normalized.dealerUrl) ymmMatch.dealerUrl = normalized.dealerUrl;
+          return;
+        }
+      }
+
       byKey.set(key, normalized);
       merged.push(normalized);
+
+      // Also index by ymm for cross-key matching
+      const yk = ymmKey(normalized);
+      if (yk && !byYmm.has(yk)) byYmm.set(yk, normalized);
       return;
     }
 
@@ -188,6 +224,9 @@ function mergeVehicles(primaryVehicles, supplementalVehicles) {
       byKey.set(key, mergedVehicle);
       const index = merged.indexOf(existing);
       if (index !== -1) merged[index] = mergedVehicle;
+
+      const yk = ymmKey(mergedVehicle);
+      if (yk) byYmm.set(yk, mergedVehicle);
       return;
     }
 
