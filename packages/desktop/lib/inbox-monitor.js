@@ -15,7 +15,7 @@ const puppeteer = addExtra(puppeteerCore);
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { SESSIONS_DIR, SCREENSHOTS_DIR, CHROME_PROFILE_DIR, ensureDirs } = require('./paths');
+const { SESSIONS_DIR, SCREENSHOTS_DIR, chromeProfileDir, ensureDirs } = require('./paths');
 
 // Register stealth plugin
 puppeteer.use(StealthPlugin());
@@ -203,15 +203,16 @@ class InboxMonitor {
       console.log('[inbox] Using residential proxy:', process.env.PROXY_URL);
     }
 
+    const profileDir = chromeProfileDir('inbox', this.salespersonId || 'default');
     const { ensureChrome, killStaleProfileChrome } = require('./chrome-path');
-    await killStaleProfileChrome(CHROME_PROFILE_DIR);
+    await killStaleProfileChrome(profileDir);
     const executablePath = await ensureChrome({ onProgress: (msg) => console.log('[inbox]', msg) });
 
     this.browser = await puppeteer.launch({
       headless: this.headless ? 'new' : false,
       slowMo: this.slowMo,
       executablePath,
-      userDataDir: CHROME_PROFILE_DIR,
+      userDataDir: profileDir,
       args: launchArgs,
       defaultViewport: { width: 1366, height: 768 }
     });

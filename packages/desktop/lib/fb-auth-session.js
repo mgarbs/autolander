@@ -20,7 +20,7 @@ const puppeteer = addExtra(puppeteerCore);
 const fs = require('fs');
 const path = require('path');
 const { encryptCookies } = require('./fb-crypto');
-const { SESSIONS_DIR, CHROME_PROFILE_DIR, ensureDirs } = require('./paths');
+const { SESSIONS_DIR, chromeProfileDir, ensureDirs } = require('./paths');
 
 // Register stealth plugin
 puppeteer.use(StealthPlugin());
@@ -79,15 +79,16 @@ class FbAuthSession {
       console.log('[fb-auth] Using residential proxy:', process.env.PROXY_URL);
     }
 
+    const profileDir = chromeProfileDir('auth', this.salespersonId);
     const { ensureChrome, killStaleProfileChrome } = require('./chrome-path');
-    await killStaleProfileChrome(CHROME_PROFILE_DIR);
+    await killStaleProfileChrome(profileDir);
     const executablePath = await ensureChrome({ onProgress: (msg) => console.log('[fb-auth]', msg) });
 
     this.browser = await puppeteer.launch({
       headless: true,
       args: launchArgs,
       executablePath,
-      userDataDir: CHROME_PROFILE_DIR,
+      userDataDir: profileDir,
       defaultViewport: VIEWPORT,
     });
 

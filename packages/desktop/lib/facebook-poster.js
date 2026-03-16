@@ -47,7 +47,7 @@ const {
   SCREENSHOTS_DIR,
   LOGS_DIR,
   TEMP_DIR,
-  CHROME_PROFILE_DIR,
+  chromeProfileDir,
   ensureDirs
 } = require('./paths');
 
@@ -321,8 +321,9 @@ class FacebookPoster {
       console.log('[poster] Using residential proxy:', process.env.PROXY_URL);
     }
 
+    const profileDir = chromeProfileDir('poster', this.salespersonId || 'default');
     const { ensureChrome, killStaleProfileChrome } = require('./chrome-path');
-    await killStaleProfileChrome(CHROME_PROFILE_DIR);
+    await killStaleProfileChrome(profileDir);
     const executablePath = await ensureChrome({ onProgress: (msg) => this.log(msg) });
     this.log(`Launch config: headless=${this.headless} executablePath=${executablePath || 'bundled'}`);
 
@@ -330,7 +331,7 @@ class FacebookPoster {
       headless: this.headless ? 'new' : false,
       slowMo: this.slowMo,
       executablePath,
-      userDataDir: CHROME_PROFILE_DIR,
+      userDataDir: profileDir,
       args: launchArgs,
       defaultViewport: {
         width: 1366,

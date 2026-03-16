@@ -444,25 +444,24 @@ function registerIpcHandlers(ipcMain) {
 
     sendAgentStatus(agentClient.getStatus());
 
-    // Start inbox polling for auto-reply
-    // NOTE: Disabled for local dev — inbox monitor hangs on Mac due to
-    // Chrome SingletonLock contention and undici/File incompatibility.
-    // Re-enable when Facebook integration is needed.
-    // try {
-    //   if (!inboxPolling) {
-    //     const { InboxPolling } = require('../worker/inbox-polling');
-    //     inboxPolling = new InboxPolling({ fbInboxAdapter: getIpcFbInboxAdapter() });
-    //     console.log('[ipc] InboxPolling created');
-    //   }
-    //   inboxPolling.start(getIpcFbInboxAdapter(), {
-    //     serverUrl: nextServerUrl,
-    //     accessToken: nextAccessToken,
-    //   });
-    //   console.log('[ipc] InboxPolling started');
-    // } catch (err) {
-    //   console.error('[ipc] InboxPolling start error:', err.message);
-    // }
-    console.log('[ipc] InboxPolling skipped (local dev mode)');
+    // Start inbox polling for auto-reply.
+    // Each Puppeteer consumer now gets its own Chrome profile directory
+    // (via chromeProfileDir in paths.js), so no more SingletonLock
+    // contention. The File polyfill in index.js handles the undici compat.
+    try {
+      if (!inboxPolling) {
+        const { InboxPolling } = require('../worker/inbox-polling');
+        inboxPolling = new InboxPolling({ fbInboxAdapter: getIpcFbInboxAdapter() });
+        console.log('[ipc] InboxPolling created');
+      }
+      inboxPolling.start(getIpcFbInboxAdapter(), {
+        serverUrl: nextServerUrl,
+        accessToken: nextAccessToken,
+      });
+      console.log('[ipc] InboxPolling started');
+    } catch (err) {
+      console.error('[ipc] InboxPolling start error:', err.message);
+    }
 
     if (!feedAutoSync) {
       const { FeedAutoSync } = require('./feed-auto-sync');

@@ -27,25 +27,80 @@ function getChromeExeNames() {
  * EACCES errors on launch.
  */
 function ensureExecutable(chromePath) {
+  if (process.platform === 'darwin') {
+    // On macOS, Puppeteer Chrome lives inside a .app bundle like:
+    //   ~/.cache/puppeteer/chrome/mac-xxx/chrome-mac-x64/
+    //     Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing
+    //
+    // Gatekeeper quarantines the ENTIRE download tree and can strip +x
+    // from any level. We need to:
+    //   1. Remove quarantine from the whole chrome cache subtree
+    //   2. chmod +x the binary AND all parent dirs in the .app bundle
+    //
+    // Find the .app bundle root (if any) and de-quarantine the whole thing
+    const appBundleRoot = findAppBundle(chromePath);
+    const quarantineTarget = appBundleRoot || path.dirname(chromePath);
+
+    try {
+      execSync(`xattr -dr com.apple.quarantine "${quarantineTarget}" 2>/dev/null`);
+      console.log('[chrome-path] Removed quarantine from:', quarantineTarget);
+    } catch (_) {}
+
+    // chmod the binary and walk up through the .app making dirs executable
+    try {
+      fs.chmodSync(chromePath, 0o755);
+      if (appBundleRoot) {
+        // Make Contents/MacOS and any intermediate dirs traversable
+        chmodParents(chromePath, appBundleRoot);
+      }
+      console.log('[chrome-path] Fixed permissions on:', chromePath);
+    } catch (err) {
+      console.warn('[chrome-path] Cannot chmod:', chromePath, err.message);
+      // Don't return false — the binary might still be executable via
+      // the quarantine removal above
+    }
+  }
+
+  // Final check: can we actually execute it?
   try {
     fs.accessSync(chromePath, fs.constants.X_OK);
     return true;
   } catch (_) {
+    // Last resort: try chmod one more time (might have been blocked by
+    // quarantine on first attempt but not after xattr removal)
     try {
       fs.chmodSync(chromePath, 0o755);
-      console.log('[chrome-path] Fixed permissions on:', chromePath);
-    } catch (chmodErr) {
-      console.warn('[chrome-path] Cannot chmod:', chromePath, chmodErr.message);
-      return false;
-    }
-    // On macOS, also remove quarantine attribute that Gatekeeper adds
-    if (process.platform === 'darwin') {
-      try {
-        execSync(`xattr -dr com.apple.quarantine "${path.dirname(chromePath)}" 2>/dev/null`);
-        console.log('[chrome-path] Removed quarantine from:', path.dirname(chromePath));
-      } catch (_) {}
-    }
-    return true;
+      fs.accessSync(chromePath, fs.constants.X_OK);
+      return true;
+    } catch (_) {}
+    console.warn('[chrome-path] Binary not executable after repair:', chromePath);
+    return false;
+  }
+}
+
+/**
+ * Walk up from a file path to find the nearest .app bundle root.
+ * Returns the .app directory path, or undefined if not inside a bundle.
+ */
+function findAppBundle(filePath) {
+  let dir = path.dirname(filePath);
+  while (dir && dir !== '/' && dir !== '.') {
+    if (dir.endsWith('.app')) return dir;
+    dir = path.dirname(dir);
+  }
+  return undefined;
+}
+
+/**
+ * chmod +x all directories between innerPath and outerPath (inclusive).
+ * Makes the directory tree traversable so the binary can be spawned.
+ */
+function chmodParents(innerPath, outerPath) {
+  let dir = path.dirname(innerPath);
+  while (dir && dir.length >= outerPath.length) {
+    try { fs.chmodSync(dir, 0o755); } catch (_) {}
+    if (dir === outerPath) break;
+    dir = path.dirname(dir);
   }
 }
 
