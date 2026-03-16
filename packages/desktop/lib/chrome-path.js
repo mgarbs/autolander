@@ -22,6 +22,34 @@ function getChromeExeNames() {
 }
 
 /**
+ * Ensure a Chrome binary is executable. On macOS, Puppeteer downloads
+ * can lose +x permissions or get quarantined by Gatekeeper, causing
+ * EACCES errors on launch.
+ */
+function ensureExecutable(chromePath) {
+  try {
+    fs.accessSync(chromePath, fs.constants.X_OK);
+    return true;
+  } catch (_) {
+    try {
+      fs.chmodSync(chromePath, 0o755);
+      console.log('[chrome-path] Fixed permissions on:', chromePath);
+    } catch (chmodErr) {
+      console.warn('[chrome-path] Cannot chmod:', chromePath, chmodErr.message);
+      return false;
+    }
+    // On macOS, also remove quarantine attribute that Gatekeeper adds
+    if (process.platform === 'darwin') {
+      try {
+        execSync(`xattr -dr com.apple.quarantine "${path.dirname(chromePath)}" 2>/dev/null`);
+        console.log('[chrome-path] Removed quarantine from:', path.dirname(chromePath));
+      } catch (_) {}
+    }
+    return true;
+  }
+}
+
+/**
  * Recursively search a directory (up to maxDepth) for a Chrome executable.
  */
 function findChromeIn(dir, maxDepth = 5, depth = 0) {
@@ -31,7 +59,7 @@ function findChromeIn(dir, maxDepth = 5, depth = 0) {
 
   for (const name of exeNames) {
     const candidate = path.join(dir, name);
-    if (fs.existsSync(candidate)) return candidate;
+    if (fs.existsSync(candidate) && ensureExecutable(candidate)) return candidate;
   }
 
   try {
@@ -89,8 +117,9 @@ function findSystemChrome() {
   }
 
   for (const candidate of candidates) {
-    console.log('[chrome-path] Checking:', candidate, fs.existsSync(candidate) ? 'FOUND' : 'missing');
-    if (fs.existsSync(candidate)) return candidate;
+    const exists = fs.existsSync(candidate);
+    console.log('[chrome-path] Checking:', candidate, exists ? 'FOUND' : 'missing');
+    if (exists && ensureExecutable(candidate)) return candidate;
   }
 
   // Fallback: use OS-level search to find any Chromium-based browser
@@ -228,6 +257,7 @@ async function ensureChrome({ onProgress } = {}) {
           platform,
         });
         console.log('[chrome-path] Downloaded to:', result.executablePath);
+        ensureExecutable(result.executablePath);
         if (onProgress) onProgress('Browser engine ready.');
         return result.executablePath;
       } catch (dlErr) {
