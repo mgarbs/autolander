@@ -364,9 +364,15 @@ function getChromePath() {
  * zombie Chrome processes holding the profile lock from previous sessions.
  */
 async function killStaleProfileChrome(profileDir) {
-  // Check if SingletonLock exists — if not, nothing to clean up
+  // Check if SingletonLock exists — if not, nothing to clean up.
+  // On macOS, Chrome creates SingletonLock as a SYMLINK pointing to
+  // "HOSTNAME-PID". fs.existsSync() follows the symlink and returns
+  // false when the target doesn't exist (dead process), so we must
+  // use lstatSync() to check the symlink itself.
   const singletonLock = path.join(profileDir, 'SingletonLock');
-  if (!fs.existsSync(singletonLock)) return;
+  let lockExists = false;
+  try { fs.lstatSync(singletonLock); lockExists = true; } catch (_) {}
+  if (!lockExists) return;
 
   try {
     const { execSync } = require('child_process');
@@ -398,25 +404,34 @@ async function killStaleProfileChrome(profileDir) {
         try { fs.unlinkSync(singletonLock); } catch (_) {}
       }
     } else {
-      // macOS / Linux: check if any Chrome process is actively using this profile
+      // macOS / Linux: find and kill any Chrome process using this profile.
+      // These are orphans from a previous Electron session — when the app
+      // restarts it doesn't kill Chrome processes it previously spawned.
+      // They hold the SingletonLock and block new launches.
       try {
         const output = execSync(
           `ps aux | grep -i chrome | grep "${profileDir}" | grep -v grep`,
           { encoding: 'utf8', timeout: 10000 }
         );
-        // If we get output, Chrome is still actively using this profile — leave it alone
-        if (output.trim().length > 0) {
-          console.log('[chrome-path] Chrome is still using profile, leaving SingletonLock:', profileDir);
-          return;
+        for (const line of output.trim().split('\n')) {
+          if (!line.trim()) continue;
+          const pidMatch = line.trim().split(/\s+/)[1];
+          if (pidMatch) {
+            try {
+              process.kill(Number(pidMatch), 'SIGTERM');
+              console.log('[chrome-path] Killed orphaned Chrome PID', pidMatch, 'for profile:', profileDir);
+            } catch (_) {}
+          }
         }
+        // Give Chrome a moment to release the lock
+        execSync('sleep 1');
       } catch (_) {
-        // grep returns exit code 1 when no matches — means no Chrome process found
+        // grep returned no matches — no Chrome process, just a stale lock
       }
-      // No Chrome process is using this profile — safe to remove stale lock
-      try {
-        fs.unlinkSync(singletonLock);
-        console.log('[chrome-path] Removed stale SingletonLock:', singletonLock);
-      } catch (_) {}
+      // Remove stale lock (whether we killed a process or it was already dead)
+      try { fs.unlinkSync(singletonLock); console.log('[chrome-path] Removed SingletonLock:', singletonLock); } catch (_) {}
+      const lockfile = path.join(profileDir, 'lockfile');
+      try { fs.unlinkSync(lockfile); } catch (_) {}
     }
   } catch (err) {
     console.warn('[chrome-path] killStaleProfileChrome:', err.message);

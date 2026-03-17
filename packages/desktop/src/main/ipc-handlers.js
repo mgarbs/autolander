@@ -444,23 +444,27 @@ function registerIpcHandlers(ipcMain) {
 
     sendAgentStatus(agentClient.getStatus());
 
-    // Start inbox polling for auto-reply.
-    // Each Puppeteer consumer now gets its own Chrome profile directory
-    // (via chromeProfileDir in paths.js), so no more SingletonLock
-    // contention. The File polyfill in index.js handles the undici compat.
-    try {
-      if (!inboxPolling) {
-        const { InboxPolling } = require('../worker/inbox-polling');
-        inboxPolling = new InboxPolling({ fbInboxAdapter: getIpcFbInboxAdapter() });
-        console.log('[ipc] InboxPolling created');
+    // Start inbox polling for auto-reply — but ONLY if we have a valid
+    // local FB session. Launching Chrome to poll an inbox we can't access
+    // is pointless and causes a confusing "Failed to launch browser" error
+    // that overlaps with the FB login flow.
+    if (localFbValid) {
+      try {
+        if (!inboxPolling) {
+          const { InboxPolling } = require('../worker/inbox-polling');
+          inboxPolling = new InboxPolling({ fbInboxAdapter: getIpcFbInboxAdapter() });
+          console.log('[ipc] InboxPolling created');
+        }
+        inboxPolling.start(getIpcFbInboxAdapter(), {
+          serverUrl: nextServerUrl,
+          accessToken: nextAccessToken,
+        });
+        console.log('[ipc] InboxPolling started');
+      } catch (err) {
+        console.error('[ipc] InboxPolling start error:', err.message);
       }
-      inboxPolling.start(getIpcFbInboxAdapter(), {
-        serverUrl: nextServerUrl,
-        accessToken: nextAccessToken,
-      });
-      console.log('[ipc] InboxPolling started');
-    } catch (err) {
-      console.error('[ipc] InboxPolling start error:', err.message);
+    } else {
+      console.log('[ipc] InboxPolling deferred — no local FB session yet');
     }
 
     if (!feedAutoSync) {
@@ -514,10 +518,39 @@ function registerIpcHandlers(ipcMain) {
       const adapter = getIpcFbAuthAdapter();
       // Start login without awaiting — frames and status stream via fb:frame / fb:progress events.
       // The promise resolves when session ends (success or timeout).
+      // Small delay to let any previous session's Chrome fully exit and
+      // release the SingletonLock before we launch a new one.
+      await new Promise((r) => setTimeout(r, 1500));
       adapter.startLogin()
-        .then((result) => updateAgentFbSessionStatus(!!result?.connected || !!result?.valid))
+        .then((result) => {
+          const valid = !!result?.connected || !!result?.valid;
+          updateAgentFbSessionStatus(valid);
+          // Start inbox polling now that FB session is established
+          if (valid && agentCredentials.serverUrl && agentCredentials.accessToken && !inboxPolling?._active) {
+            try {
+              if (!inboxPolling) {
+                const { InboxPolling } = require('../worker/inbox-polling');
+                inboxPolling = new InboxPolling({ fbInboxAdapter: getIpcFbInboxAdapter() });
+              }
+              inboxPolling.start(getIpcFbInboxAdapter(), {
+                serverUrl: agentCredentials.serverUrl,
+                accessToken: agentCredentials.accessToken,
+              });
+              console.log('[ipc] InboxPolling started after FB login');
+            } catch (err) {
+              console.error('[ipc] InboxPolling start error:', err.message);
+            }
+          }
+        })
         .catch((err) => {
           console.error('[ipc] fb:login session error:', err.message);
+          // Don't show transient "Failed to launch browser" errors —
+          // these happen when a previous Chrome is still shutting down.
+          // Only surface real auth failures to the user.
+          if (err.message && err.message.includes('Failed to launch the browser')) {
+            console.warn('[ipc] Transient browser launch error — suppressed from UI');
+            return;
+          }
           const win = getMainWindow();
           if (win && !win.isDestroyed()) {
             win.webContents.send('fb:progress', {
