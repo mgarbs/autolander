@@ -529,8 +529,11 @@ function registerIpcHandlers(ipcMain) {
       // release the SingletonLock before we launch a new one.
       await new Promise((r) => setTimeout(r, 1500));
       adapter.startLogin()
-        .then((result) => {
-          const valid = !!result?.connected || !!result?.valid;
+        .then(() => {
+          // startLogin() resolves when the session ends (success or timeout).
+          // Re-check the actual session file on disk to determine if login succeeded,
+          // since the return value only has { state, salespersonId } from session start.
+          const valid = validateLocalFbSession();
           updateAgentFbSessionStatus(valid);
           // Start inbox polling now that FB session is established
           if (valid && agentCredentials.serverUrl && agentCredentials.accessToken && !inboxPolling?._active) {
