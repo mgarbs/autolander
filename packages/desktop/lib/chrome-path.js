@@ -364,33 +364,63 @@ function getChromePath() {
  * zombie Chrome processes holding the profile lock from previous sessions.
  */
 async function killStaleProfileChrome(profileDir) {
-  if (process.platform !== 'win32') return; // Only needed on Windows
+  // Check if SingletonLock exists — if not, nothing to clean up
+  const singletonLock = path.join(profileDir, 'SingletonLock');
+  if (!fs.existsSync(singletonLock)) return;
+
   try {
     const { execSync } = require('child_process');
-    const output = execSync(
-      'wmic process where "name=\'chrome.exe\'" get CommandLine,ProcessId /format:csv 2>nul',
-      { encoding: 'utf8', timeout: 10000 }
-    );
-    const normalizedProfile = profileDir.replace(/\//g, '\\').toLowerCase();
-    for (const line of output.split('\n')) {
-      if (!line.toLowerCase().includes(normalizedProfile)) continue;
-      const match = line.match(/(\d+)\s*$/);
-      if (match) {
-        const pid = match[1];
-        try {
-          process.kill(Number(pid));
-          console.log('[chrome-path] Killed stale Chrome PID', pid);
-        } catch (_) {}
+
+    if (process.platform === 'win32') {
+      // Windows: kill stale Chrome processes using wmic, then clean up locks
+      const output = execSync(
+        'wmic process where "name=\'chrome.exe\'" get CommandLine,ProcessId /format:csv 2>nul',
+        { encoding: 'utf8', timeout: 10000 }
+      );
+      const normalizedProfile = profileDir.replace(/\//g, '\\').toLowerCase();
+      for (const line of output.split('\n')) {
+        if (!line.toLowerCase().includes(normalizedProfile)) continue;
+        const match = line.match(/(\d+)\s*$/);
+        if (match) {
+          const pid = match[1];
+          try {
+            process.kill(Number(pid));
+            console.log('[chrome-path] Killed stale Chrome PID', pid);
+          } catch (_) {}
+        }
       }
-    }
-    // Remove lockfile after killing processes
-    const lockfile = path.join(profileDir, 'lockfile');
-    if (fs.existsSync(lockfile)) {
-      try { fs.unlinkSync(lockfile); } catch (_) {}
+      // Remove lockfile and SingletonLock after killing processes
+      const lockfile = path.join(profileDir, 'lockfile');
+      if (fs.existsSync(lockfile)) {
+        try { fs.unlinkSync(lockfile); } catch (_) {}
+      }
+      if (fs.existsSync(singletonLock)) {
+        try { fs.unlinkSync(singletonLock); } catch (_) {}
+      }
+    } else {
+      // macOS / Linux: check if any Chrome process is actively using this profile
+      try {
+        const output = execSync(
+          `ps aux | grep -i chrome | grep "${profileDir}" | grep -v grep`,
+          { encoding: 'utf8', timeout: 10000 }
+        );
+        // If we get output, Chrome is still actively using this profile — leave it alone
+        if (output.trim().length > 0) {
+          console.log('[chrome-path] Chrome is still using profile, leaving SingletonLock:', profileDir);
+          return;
+        }
+      } catch (_) {
+        // grep returns exit code 1 when no matches — means no Chrome process found
+      }
+      // No Chrome process is using this profile — safe to remove stale lock
+      try {
+        fs.unlinkSync(singletonLock);
+        console.log('[chrome-path] Removed stale SingletonLock:', singletonLock);
+      } catch (_) {}
     }
   } catch (err) {
     console.warn('[chrome-path] killStaleProfileChrome:', err.message);
   }
 }
 
-module.exports = { getChromePath, ensureChrome, killStaleProfileChrome };
+module.exports = { getChromePath, ensureChrome, killStaleProfileChrome, findChromeIn };

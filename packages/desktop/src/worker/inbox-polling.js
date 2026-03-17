@@ -102,6 +102,7 @@ class InboxPolling extends EventEmitter {
             }
         } catch (err) {
             console.error('[inbox-polling] Error:', err.message);
+            this.emit('poll-error', { error: err.message });
         } finally {
             this._running = false;
         }
