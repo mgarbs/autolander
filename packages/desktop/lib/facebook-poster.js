@@ -1490,33 +1490,14 @@ class FacebookPoster {
     }
 
     // --- DROPDOWN: Vehicle condition (Car/van only) ---
+    // Condition is already computed by the feed parser (inferCondition in
+    // schema.js) based on year + mileage. The poster just maps it to the
+    // FB dropdown value. Falls back to 'Good' if somehow missing.
     if (hasDropdown('Vehicle condition', 'Condition')) {
       this.log('Setting Vehicle condition...');
-      let condVal;
-      const rawCondition = (vehicle.condition || '').toLowerCase().trim();
-
-      if (rawCondition && conditionMap[rawCondition]) {
-        // Explicit condition provided by feed - use it
-        condVal = conditionMap[rawCondition];
-      } else {
-        // Infer condition from year and mileage
-        const currentYear = new Date().getFullYear();
-        const vehicleAge = currentYear - (vehicle.year || currentYear);
-        const mileage = vehicle.mileage || 0;
-
-        if (vehicleAge <= 1 && mileage < 20000) {
-          condVal = ['Excellent'];
-        } else if (vehicleAge <= 4 && mileage < 60000) {
-          condVal = ['Very good'];
-        } else if (vehicleAge <= 8 && mileage < 100000) {
-          condVal = ['Good'];
-        } else if (mileage < 150000) {
-          condVal = ['Fair'];
-        } else {
-          condVal = ['Poor'];
-        }
-        this.log(` Inferred condition from year=${vehicle.year}, mileage=${mileage}: ${condVal[0]}`);
-      }
+      const rawCondition = (vehicle.condition || 'Good').trim();
+      const condVal = conditionMap[rawCondition.toLowerCase()] || [rawCondition];
+      this.log(` Condition: ${condVal[0]} (from vehicle.condition="${rawCondition}")`);
 
       if (await this.selectDropdown(['Vehicle condition', 'Condition'], condVal)) {
         fieldsFound++;

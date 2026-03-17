@@ -1,7 +1,7 @@
 'use strict';
 
 const cheerio = require('cheerio');
-const { createEmptyVehicle } = require('./schema');
+const { createEmptyVehicle, inferCondition } = require('./schema');
 
 const LOG_PREFIX = '[feed-parser:vauto]';
 
@@ -115,7 +115,6 @@ function mapToVehicle(raw) {
   v.bodyStyle = cleanText(raw.body || raw.bodystyle || raw.body_style || raw.bodytype);
   v.transmission = cleanText(raw.transmission || raw.trans);
   v.fuelType = cleanText(raw.fueltype || raw.fuel_type || raw.fuel);
-  v.condition = cleanText(raw.condition || raw.certified);
   v.description = cleanText(raw.description || raw.comments || raw.vehicle_comments || raw.sellernotes);
 
   const photoStr = raw.imageurls || raw.photourls || raw.photo_urls || raw.images || raw.image_list || '';
@@ -124,6 +123,7 @@ function mapToVehicle(raw) {
   }
 
   v.dealerUrl = cleanText(raw.dealerurl || raw.vdp_url || raw.detail_url || raw.vehicle_url);
+  v.condition = inferCondition(v);
   return v;
 }
 

@@ -1,7 +1,7 @@
 'use strict';
 
 const cheerio = require('cheerio');
-const { createEmptyVehicle } = require('./schema');
+const { createEmptyVehicle, inferCondition } = require('./schema');
 
 const LOG_PREFIX = '[feed-parser:autotrader]';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
@@ -107,7 +107,6 @@ function toVehicle(raw, feedUrl) {
   vehicle.bodyStyle = cleanText(raw.bodyStyle || raw.bodyType);
   vehicle.transmission = cleanText(raw.transmission || raw.transmissionType);
   vehicle.fuelType = cleanText(raw.fuelType || raw.fuel || raw.vehicleEngine?.fuelType);
-  vehicle.condition = cleanText(raw.condition || raw.itemCondition);
   vehicle.description = cleanText(raw.description);
   vehicle.photos = uniqPhotos(
     ensureArray(raw.photos || raw.images || raw.image || raw.photoUrls).map((item) =>
@@ -115,6 +114,7 @@ function toVehicle(raw, feedUrl) {
     )
   );
   vehicle.dealerUrl = cleanText(raw.url || raw.dealerUrl || feedUrl);
+  vehicle.condition = inferCondition(vehicle);
 
   return vehicle;
 }

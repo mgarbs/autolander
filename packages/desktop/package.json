@@ -1,6 +1,6 @@
 {
   "name": "@autolander/desktop",
-  "version": "1.3.9",
+  "version": "1.4.0",
   "private": true,
   "description": "AutoLander Desktop — Electron app with React UI + FB automation",
   "main": "src/main/index.js",

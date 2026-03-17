@@ -1,7 +1,7 @@
 'use strict';
 
 const cheerio = require('cheerio');
-const { createEmptyVehicle } = require('./schema');
+const { createEmptyVehicle, inferCondition } = require('./schema');
 
 const LOG_PREFIX = '[feed-parser:carscom]';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
@@ -143,7 +143,6 @@ function toVehicle(raw, feedUrl) {
   vehicle.bodyStyle = cleanText(raw.bodyStyle || raw.bodyType);
   vehicle.transmission = cleanText(raw.transmission || raw.transmissionType);
   vehicle.fuelType = cleanText(raw.fuelType || raw.fuel || raw.vehicleEngine?.fuelType);
-  vehicle.condition = cleanText(raw.condition || raw.itemCondition);
   vehicle.description = cleanText(raw.description);
   vehicle.photos = uniqPhotos(
     ensureArray(raw.photos || raw.image || raw.images || raw.photoUrls).map((item) =>
@@ -151,6 +150,7 @@ function toVehicle(raw, feedUrl) {
     )
   );
   vehicle.dealerUrl = resolveUrl(raw.url || raw.dealerUrl || feedUrl, feedUrl);
+  vehicle.condition = inferCondition(vehicle);
 
   return vehicle;
 }
@@ -273,7 +273,6 @@ function parseSiteActivityVehicles(html, feedUrl) {
       vehicle.bodyStyle = cleanText(item.bodystyle);
       vehicle.fuelType = cleanText(item.fuel_type);
       vehicle.transmission = cleanText(item.drivetrain);
-      vehicle.condition = cleanText(item.stock_type);
       vehicle.description = cleanText(
         `${item.year || ''} ${item.make || ''} ${item.model || ''} ${item.trim || ''}`.trim()
       );
@@ -282,6 +281,7 @@ function parseSiteActivityVehicles(html, feedUrl) {
         : feedUrl;
       // No photos on search results page — photo_count tells us they exist on detail pages
       vehicle.photos = [];
+      vehicle.condition = inferCondition(vehicle);
       if (hasRequiredFields(vehicle)) vehicles.push(vehicle);
     }
   });
@@ -311,7 +311,6 @@ function parseLiveViewCards(html, feedUrl) {
     vehicle.trim = cleanText(payload.trim);
     vehicle.price = normalizePrice(payload.price);
     vehicle.bodyStyle = cleanText(payload.bodystyle);
-    vehicle.condition = cleanText(payload.stock_type);
     vehicle.dealerUrl = node.attr('href')
       ? resolveUrl(node.attr('href'), CARSCOM_BASE_URL)
       : feedUrl;
@@ -323,6 +322,7 @@ function parseLiveViewCards(html, feedUrl) {
     const mileage = parent.find('[data-qa="mileage"]').text().trim();
     if (mileage) vehicle.mileage = normalizeMileage(mileage);
 
+    vehicle.condition = inferCondition(vehicle);
     if (hasRequiredFields(vehicle)) vehicles.push(vehicle);
   });
 
