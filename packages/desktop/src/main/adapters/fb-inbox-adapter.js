@@ -1,6 +1,7 @@
 'use strict';
 
 const { Commands } = require('@autolander/shared/protocol');
+const { SharedBrowser } = require('../../../lib/shared-browser');
 
 class FbInboxAdapter {
   constructor({ dataDir, salespersonId = 'default', mainWindow = null } = {}) {
@@ -19,7 +20,7 @@ class FbInboxAdapter {
 
   async setSalespersonId(id) {
     if (this.salespersonId === id) return;
-    // Tear down cached Puppeteer — it holds the old user's session cookies
+    // Release inbox page — shared browser teardown handled by ipc-handlers
     if (this.monitor) {
       await this.monitor.close().catch(() => {});
       this.monitor = null;
@@ -42,67 +43,77 @@ class FbInboxAdapter {
   }
 
   async checkInbox() {
-    const monitor = await this._getMonitor();
-    await monitor.navigateToInbox();
+    const unlock = await SharedBrowser.lockNavigation(this.salespersonId, 'inbox');
+    try {
+      const monitor = await this._getMonitor();
+      await monitor.navigateToInbox();
 
-    const threads = await monitor.getUnreadThreads();
-    const results = [];
-    this.threadCache.clear();
+      const threads = await monitor.getUnreadThreads();
+      const results = [];
+      this.threadCache.clear();
 
-    for (const thread of threads) {
-      this.threadCache.set(thread.threadId, thread);
-      const messages = await monitor.openThread(thread);
-      const vehicleMatch = monitor.parseVehicleFromText(thread.listingTitle) || null;
-      results.push({
-        threadId: thread.threadId,
-        buyerName: thread.buyerName,
-        listingTitle: thread.listingTitle || '',
-        messages,
-        vehicleMatch,
-      });
+      for (const thread of threads) {
+        this.threadCache.set(thread.threadId, thread);
+        const messages = await monitor.openThread(thread);
+        const vehicleMatch = monitor.parseVehicleFromText(thread.listingTitle) || null;
+        results.push({
+          threadId: thread.threadId,
+          buyerName: thread.buyerName,
+          listingTitle: thread.listingTitle || '',
+          messages,
+          vehicleMatch,
+        });
+      }
+
+      this.lastCheck = new Date().toISOString();
+      return results;
+    } finally {
+      unlock();
     }
-
-    this.lastCheck = new Date().toISOString();
-    return results;
   }
 
   async sendMessage(threadId, text, expectedBuyer, listingTitle) {
-    const monitor = await this._getMonitor();
-    await monitor.navigateToInbox();
+    const unlock = await SharedBrowser.lockNavigation(this.salespersonId, 'inbox');
+    try {
+      const monitor = await this._getMonitor();
+      await monitor.navigateToInbox();
 
-    // 1. Check cache first
-    let thread = this.threadCache.get(threadId);
+      // 1. Check cache first
+      let thread = this.threadCache.get(threadId);
 
-    // 2. Try unread threads
-    if (!thread) {
-      const unreadThreads = await monitor.getUnreadThreads();
-      for (const t of unreadThreads) {
-        this.threadCache.set(t.threadId, t);
+      // 2. Try unread threads
+      if (!thread) {
+        const unreadThreads = await monitor.getUnreadThreads();
+        for (const t of unreadThreads) {
+          this.threadCache.set(t.threadId, t);
+        }
+        thread = this.threadCache.get(threadId);
       }
-      thread = this.threadCache.get(threadId);
-    }
 
-    // 3. Try ALL visible threads (not just unread)
-    if (!thread) {
-      const allThreads = await monitor.getAllThreads ? await monitor.getAllThreads() : [];
-      for (const t of allThreads) {
-        this.threadCache.set(t.threadId, t);
+      // 3. Try ALL visible threads (not just unread)
+      if (!thread) {
+        const allThreads = await monitor.getAllThreads ? await monitor.getAllThreads() : [];
+        for (const t of allThreads) {
+          this.threadCache.set(t.threadId, t);
+        }
+        thread = this.threadCache.get(threadId);
       }
-      thread = this.threadCache.get(threadId);
+
+      // 4. Last resort: construct a minimal thread object and try to open by ID
+      if (!thread) {
+        console.warn(`[fb-inbox] Thread ${threadId} not found in lists, attempting direct open`);
+        thread = { threadId, buyerName: expectedBuyer || '', listingTitle: listingTitle || '' };
+      }
+
+      const buyerName = expectedBuyer || thread.buyerName;
+      const resolvedListingTitle = listingTitle || thread.listingTitle || '';
+
+      await monitor.openThread({ ...thread, buyerName, listingTitle: resolvedListingTitle });
+      const sent = await monitor.sendMessage(text, buyerName);
+      return { sent };
+    } finally {
+      unlock();
     }
-
-    // 4. Last resort: construct a minimal thread object and try to open by ID
-    if (!thread) {
-      console.warn(`[fb-inbox] Thread ${threadId} not found in lists, attempting direct open`);
-      thread = { threadId, buyerName: expectedBuyer || '', listingTitle: listingTitle || '' };
-    }
-
-    const buyerName = expectedBuyer || thread.buyerName;
-    const resolvedListingTitle = listingTitle || thread.listingTitle || '';
-
-    await monitor.openThread({ ...thread, buyerName, listingTitle: resolvedListingTitle });
-    const sent = await monitor.sendMessage(text, buyerName);
-    return { sent };
   }
 
   async execute(command, payload = {}, opts = {}) {

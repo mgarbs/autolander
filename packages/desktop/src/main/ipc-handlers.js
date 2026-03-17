@@ -44,10 +44,17 @@ function getSalespersonId() {
 
 /**
  * Update all adapter instances with a new salespersonId. Called on login
- * when the user changes. Tears down any cached Puppeteer sessions that
- * hold the previous user's cookies.
+ * when the user changes. Tears down the shared browser for the old user
+ * and updates all adapters to point to the new user.
  */
 async function updateAdapterSalespersonId(id) {
+  // Tear down the shared browser for the previous user (kills Chrome for all modules)
+  const oldId = getSalespersonId();
+  if (oldId && oldId !== id) {
+    const { SharedBrowser } = require('../../lib/shared-browser');
+    await SharedBrowser.teardown(oldId).catch(() => {});
+  }
+
   const updates = [];
   if (ipcFbAuthAdapter && typeof ipcFbAuthAdapter.setSalespersonId === 'function') {
     ipcFbAuthAdapter.setSalespersonId(id);
@@ -713,7 +720,7 @@ async function cleanupAdapters() {
   console.log('[ipc] Cleaning up adapters before quit...');
   const destroyTasks = [];
   if (ipcFbAuthAdapter && typeof ipcFbAuthAdapter.destroy === 'function') {
-    destroyTasks.push(ipcFbAuthAdapter.destroy().catch(() => {}));
+    destroyTasks.push(Promise.resolve(ipcFbAuthAdapter.destroy()).catch(() => {}));
   }
   if (ipcFbPosterAdapter && typeof ipcFbPosterAdapter.destroy === 'function') {
     destroyTasks.push(ipcFbPosterAdapter.destroy().catch(() => {}));
@@ -728,7 +735,7 @@ async function cleanupAdapters() {
     destroyTasks.push(fbInboxAdapter.destroy().catch(() => {}));
   }
   if (fbAuthAdapter && fbAuthAdapter !== ipcFbAuthAdapter && typeof fbAuthAdapter.destroy === 'function') {
-    destroyTasks.push(fbAuthAdapter.destroy().catch(() => {}));
+    destroyTasks.push(Promise.resolve(fbAuthAdapter.destroy()).catch(() => {}));
   }
   if (inboxPolling) {
     inboxPolling.stop();
@@ -741,6 +748,11 @@ async function cleanupAdapters() {
     agentClient.disconnect();
   }
   await Promise.allSettled(destroyTasks);
+
+  // Kill all shared Chrome instances
+  const { SharedBrowser } = require('../../lib/shared-browser');
+  await SharedBrowser.teardownAll().catch(() => {});
+
   console.log('[ipc] Adapter cleanup complete');
 }
 

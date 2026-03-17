@@ -31,6 +31,16 @@ function chromeProfileDir(purpose = 'default', salespersonId = 'default') {
   return dir;
 }
 
+/**
+ * Return the shared Chrome profile directory for a salesperson.
+ * All modules (auth, poster, inbox) share this single profile.
+ */
+function sharedChromeProfileDir(salespersonId = 'default') {
+  const dir = path.join(DATA_DIR, 'chrome-profiles', salespersonId, 'shared');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 function ensureDirs() {
   [DATA_DIR, SESSIONS_DIR, SCREENSHOTS_DIR, LOGS_DIR, TEMP_DIR, CHROME_PROFILE_DIR].forEach((dir) => {
     fs.mkdirSync(dir, { recursive: true });
@@ -45,5 +55,6 @@ module.exports = {
   TEMP_DIR,
   CHROME_PROFILE_DIR,
   chromeProfileDir,
+  sharedChromeProfileDir,
   ensureDirs,
 };

@@ -5,27 +5,24 @@
  * to a WebSocket client via the Chrome DevTools Protocol screencast API.
  * The user logs in to Facebook in their browser; no credentials touch the server.
  *
+ * Uses SharedBrowser — acquires a tab in the shared Chrome instance rather
+ * than launching its own browser. The browser stays alive after login so
+ * poster and inbox can reuse it.
+ *
  * Flow:
- *   1. start() — launches browser, navigates to facebook.com/login, begins streaming
+ *   1. start() — acquires shared browser, opens auth tab, navigates to fb login, streams
  *   2. Client sends mouse/keyboard events → sendInput() relays them to Puppeteer
  *   3. _checkForLogin() polls for the c_user + xs cookies that indicate success
  *   4. On success, cookies are encrypted and saved; onStatusChange fires 'success'
- *   5. Browser is destroyed; WebSocket is closed by the server
+ *   5. Auth tab is released (browser stays alive for poster/inbox)
  */
 
-const { addExtra } = require('puppeteer-extra');
-const puppeteerCore = require('puppeteer-core');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const puppeteer = addExtra(puppeteerCore);
 const fs = require('fs');
 const path = require('path');
 const { encryptCookies } = require('./fb-crypto');
-const { SESSIONS_DIR, chromeProfileDir, ensureDirs } = require('./paths');
+const { SESSIONS_DIR, ensureDirs } = require('./paths');
+const { SharedBrowser, VIEWPORT } = require('./shared-browser');
 
-// Register stealth plugin
-puppeteer.use(StealthPlugin());
-
-const VIEWPORT = { width: 1366, height: 768 };
 const SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 class FbAuthSession {
@@ -33,7 +30,6 @@ class FbAuthSession {
     this.salespersonId = options.salespersonId || 'default';
     this.sessionFile = path.join(SESSIONS_DIR, `${this.salespersonId}_fb_session.json`);
 
-    this.browser = null;
     this.page = null;
     this.cdpSession = null;
     this.status = 'idle'; // idle | starting | waiting_login | success | error
@@ -61,48 +57,12 @@ class FbAuthSession {
 
     this._setStatus('starting', 'Launching browser...');
 
-    const launchArgs = [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-blink-features=AutomationControlled',
-      '--single-process',
-      '--disable-extensions',
-      '--disable-background-networking',
-      '--disable-default-apps',
-      '--js-flags=--max-old-space-size=128',
-    ];
-    if (process.env.PROXY_URL) {
-      launchArgs.push(`--proxy-server=${process.env.PROXY_URL}`);
-      launchArgs.push('--ignore-certificate-errors');
-      console.log('[fb-auth] Using residential proxy:', process.env.PROXY_URL);
-    }
+    // Acquire shared browser and get an auth tab
+    await SharedBrowser.acquire(this.salespersonId);
+    SharedBrowser.setAuthActive(this.salespersonId, true);
 
-    const profileDir = chromeProfileDir('auth', this.salespersonId);
-    const { ensureChrome, killStaleProfileChrome } = require('./chrome-path');
-    await killStaleProfileChrome(profileDir);
-    const executablePath = await ensureChrome({ onProgress: (msg) => console.log('[fb-auth]', msg) });
-
-    this.browser = await puppeteer.launch({
-      headless: true,
-      args: launchArgs,
-      executablePath,
-      userDataDir: profileDir,
-      defaultViewport: VIEWPORT,
-    });
-
-    this.page = await this.browser.newPage();
-    if (process.env.PROXY_USERNAME && process.env.PROXY_PASSWORD) {
-      await this.page.authenticate({
-        username: process.env.PROXY_USERNAME,
-        password: process.env.PROXY_PASSWORD
-      });
-    }
+    this.page = await SharedBrowser.getPage(this.salespersonId, 'auth');
     await this.page.setViewport(VIEWPORT);
-    await this.page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    );
 
     // Start CDP screencast
     this.cdpSession = await this.page.createCDPSession();
@@ -244,14 +204,17 @@ class FbAuthSession {
     if (this._destroyed) return;
     this._destroyed = true;
     this._clearTimers();
+
+    // Stop screencast and detach CDP session
     if (this.cdpSession) {
       this.cdpSession.send('Page.stopScreencast').catch(() => {});
+      this.cdpSession.detach().catch(() => {});
       this.cdpSession = null;
     }
-    if (this.browser) {
-      this.browser.close().catch(() => {});
-      this.browser = null;
-    }
+
+    // Release the auth page — do NOT close the browser
+    SharedBrowser.releasePage(this.salespersonId, 'auth').catch(() => {});
+    SharedBrowser.setAuthActive(this.salespersonId, false);
     this.page = null;
   }
 }

@@ -69,17 +69,7 @@ class AssistedPostSession {
       });
       await this.poster.init();
 
-      // When connected to existing Chrome, it skips loadSession() assuming the
-      // browser is already logged in. But the FB auth flow runs in a separate
-      // Puppeteer instance, so the existing Chrome may not have those cookies.
-      // Always load saved session cookies to ensure we're authenticated.
-      if (this.poster.isConnected) {
-        await this.poster.loadSession();
-      }
-
       // Lock viewport to match screencast dimensions so click coordinates align.
-      // Without this, Chrome's actual viewport (e.g. 1920x1080) differs from the
-      // screencast frame size (1366x768), making every click land off-target.
       await this.poster.page.setViewport(VIEWPORT);
 
       // Verify we're actually logged in before proceeding

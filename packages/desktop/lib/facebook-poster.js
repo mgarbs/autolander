@@ -32,10 +32,6 @@
  *   Fuel type → Petrol, Transmission → Automatic transmission
  */
 
-const { addExtra } = require('puppeteer-extra');
-const puppeteerCore = require('puppeteer-core');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const puppeteer = addExtra(puppeteerCore);
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -47,12 +43,9 @@ const {
   SCREENSHOTS_DIR,
   LOGS_DIR,
   TEMP_DIR,
-  chromeProfileDir,
   ensureDirs
 } = require('./paths');
-
-// Add stealth plugin to avoid detection
-puppeteer.use(StealthPlugin());
+const { SharedBrowser } = require('./shared-browser');
 
 const PHOTOS_DIR = path.join(DATA_DIR, 'photos');
 const LOG_DIR = LOGS_DIR;
@@ -151,14 +144,9 @@ class FacebookPoster {
   constructor(options = {}) {
     this.sid = `fb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     this.salespersonId = options.salespersonId;
-    this.headless = process.env.BROWSER_VISIBLE === 'true' ? false : (options.headless !== false);
-    this.slowMo = options.slowMo || 50;
     this.browser = null;
-    this.browserPid = null;
     this.page = null;
     this.isLoggedIn = false;
-    this.isConnected = false;
-    this.debugPort = options.debugPort || process.env.CHROME_DEBUG_PORT || 9222;
     this.sessionFile = path.join(SESSIONS_DIR, `${this.salespersonId || 'default'}_fb_session.json`);
     this.apiUrl = '';
     this.authToken = '';
@@ -180,29 +168,6 @@ class FacebookPoster {
   setCloudCredentials(apiUrl, authToken) {
     this.apiUrl = typeof apiUrl === 'string' ? apiUrl.trim().replace(/\/+$/, '') : '';
     this.authToken = typeof authToken === 'string' ? authToken.trim() : '';
-  }
-
-  /**
-   * Fetch the WebSocket debugger URL from a running Chrome instance.
-   * @returns {string|null} WebSocket URL or null if Chrome isn't available
-   */
-  async _getDebuggerWSEndpoint() {
-    return new Promise((resolve) => {
-      const req = http.get(`http://localhost:${this.debugPort}/json/version`, { timeout: 3000 }, (res) => {
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data);
-            resolve(json.webSocketDebuggerUrl || null);
-          } catch (_) {
-            resolve(null);
-          }
-        });
-      });
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => { req.destroy(); resolve(null); });
-    });
   }
 
   async _cloudPost(routePath, body) {
@@ -263,117 +228,31 @@ class FacebookPoster {
   }
 
   /**
-   * Initialize browser.
-   * Tries to connect to an existing Chrome with remote debugging first.
-   * Falls back to launching a new browser instance if unavailable.
+   * Initialize browser via SharedBrowser.
+   * Acquires the shared Chrome instance and opens a poster tab.
    */
   async init() {
-    this.log('Initializing browser...');
-
-    // --- Try connecting to existing Chrome ---
-    const wsEndpoint = await this._getDebuggerWSEndpoint();
-    if (wsEndpoint) {
-      try {
-        this.log(`Found Chrome debugger on port ${this.debugPort}, connecting...`);
-        this.browser = await puppeteer.connect({
-          browserWSEndpoint: wsEndpoint,
-          defaultViewport: null
-        });
-        this.isConnected = true;
-        this.isLoggedIn = true; // Real browser is already logged in
-
-        this.browser.on('disconnected', () => {
-          this.err('Browser DISCONNECTED — Chrome was closed externally');
-        });
-
-        this.page = await this.browser.newPage();
-        if (process.env.PROXY_USERNAME && process.env.PROXY_PASSWORD) {
-          await this.page.authenticate({
-            username: process.env.PROXY_USERNAME,
-            password: process.env.PROXY_PASSWORD
-          });
-        }
-        this.page.setDefaultNavigationTimeout(60000);
-
-        this.log('Connected to existing Chrome — using real browser session');
-        this.log('Skipping stealth/user-agent/cookie setup (real browser handles it)');
-        return this;
-      } catch (e) {
-        this.warn(`Failed to connect to Chrome on port ${this.debugPort}: ${e.message}`);
-        this.warn('Falling back to launching new browser...');
-      }
-    } else {
-      this.warn(`No Chrome debugger found on port ${this.debugPort}`);
-      this.warn('To use your real Chrome (recommended for FB): node cli.js chrome-debug');
-      this.warn('Falling back to launching new browser...');
+    if (SharedBrowser.isAuthActive(this.salespersonId || 'default')) {
+      throw new Error('Login in progress — please wait for auth to complete');
     }
 
-    // --- Fallback: launch new browser ---
-    const launchArgs = [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-blink-features=AutomationControlled',
-      '--window-size=1366,768'
-    ];
-    if (process.env.PROXY_URL) {
-      launchArgs.push(`--proxy-server=${process.env.PROXY_URL}`);
-      launchArgs.push('--ignore-certificate-errors');
-      console.log('[poster] Using residential proxy:', process.env.PROXY_URL);
-    }
+    this.log('Initializing browser via SharedBrowser...');
 
-    const profileDir = chromeProfileDir('poster', this.salespersonId || 'default');
-    const { ensureChrome, killStaleProfileChrome } = require('./chrome-path');
-    await killStaleProfileChrome(profileDir);
-    const executablePath = await ensureChrome({ onProgress: (msg) => this.log(msg) });
-    this.log(`Launch config: headless=${this.headless} executablePath=${executablePath || 'bundled'}`);
+    const spId = this.salespersonId || 'default';
+    const slot = await SharedBrowser.acquire(spId);
+    this.browser = slot.browser;
 
-    this.browser = await puppeteer.launch({
-      headless: this.headless ? 'new' : false,
-      slowMo: this.slowMo,
-      executablePath,
-      userDataDir: profileDir,
-      args: launchArgs,
-      defaultViewport: {
-        width: 1366,
-        height: 768
-      }
-    });
+    this.page = await SharedBrowser.getPage(spId, 'poster');
 
-    // Track browser PID for debugging multiple instances
-    this.browserPid = this.browser.process()?.pid || null;
-    this.log(`Browser launched — PID=${this.browserPid}`);
-
-    // Listen for browser disconnect/crash
-    this.browser.on('disconnected', () => {
-      this.err(`Browser DISCONNECTED (PID=${this.browserPid}) — crashed or closed externally`);
-    });
-
-    this.page = await this.browser.newPage();
-    if (process.env.PROXY_USERNAME && process.env.PROXY_PASSWORD) {
-      await this.page.authenticate({
-        username: process.env.PROXY_USERNAME,
-        password: process.env.PROXY_PASSWORD
-      });
-    }
-    this.log('New page created');
-
-    // Log console messages from the page
+    // Log page JS errors
     this.page.on('pageerror', (error) => {
       this.err(`Page JS error: ${error.message}`);
     });
 
-    // Set realistic user agent
-    await this.page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    );
-
-    // Global navigation timeout
-    this.page.setDefaultNavigationTimeout(60000);
-
-    // Load saved cookies if available
+    // Load saved cookies as fallback for fresh profiles
     await this.loadSession();
 
-    this.log('Browser initialized and ready');
+    this.log('Browser initialized and ready (shared)');
     return this;
   }
 
@@ -382,7 +261,6 @@ class FacebookPoster {
    */
   async saveSession() {
     if (!this.page) return;
-    if (this.isConnected) return; // Real browser manages its own session
 
     const cookies = await this.page.cookies();
     const encrypted = encryptCookies(cookies);
@@ -429,25 +307,41 @@ class FacebookPoster {
   }
 
   /**
+   * Run a function while holding the navigation mutex.
+   * Ensures only one module navigates the shared browser at a time.
+   */
+  async _withMutex(fn, maxHoldMs) {
+    const spId = this.salespersonId || 'default';
+    const unlock = await SharedBrowser.lockNavigation(spId, 'poster', maxHoldMs);
+    try {
+      return await fn();
+    } finally {
+      unlock();
+    }
+  }
+
+  /**
    * Check if currently logged in
    */
   async checkLoginStatus() {
-    try {
-      await this.page.goto('https://www.facebook.com', { waitUntil: 'networkidle2' });
-      await humanDelay(2000, 4000);
+    return this._withMutex(async () => {
+      try {
+        await this.page.goto('https://www.facebook.com', { waitUntil: 'networkidle2' });
+        await humanDelay(2000, 4000);
 
-      // Check for login form vs user menu
-      const loginForm = await this.page.$('input[name="email"]');
-      const userMenu = await this.page.$('[aria-label="Your profile"]');
+        // Check for login form vs user menu
+        const loginForm = await this.page.$('input[name="email"]');
+        const userMenu = await this.page.$('[aria-label="Your profile"]');
 
-      this.isLoggedIn = !loginForm && !!userMenu;
-      this.log(` Login status: ${this.isLoggedIn ? 'logged in' : 'not logged in'}`);
+        this.isLoggedIn = !loginForm && !!userMenu;
+        this.log(` Login status: ${this.isLoggedIn ? 'logged in' : 'not logged in'}`);
 
-      return this.isLoggedIn;
-    } catch (e) {
-      this.err('Error checking login status:', e.message);
-      return false;
-    }
+        return this.isLoggedIn;
+      } catch (e) {
+        this.err('Error checking login status:', e.message);
+        return false;
+      }
+    });
   }
 
   /**
@@ -773,6 +667,7 @@ class FacebookPoster {
    * @param {object} vehicle - Vehicle object (used to determine vehicle type)
    */
   async goToCreateListing(vehicle = {}) {
+    return this._withMutex(async () => {
     this.log('Navigating to Marketplace...');
 
     await this.page.goto('https://www.facebook.com/marketplace/create/vehicle', {
@@ -926,6 +821,7 @@ class FacebookPoster {
 
     this.log('On create listing page');
     return true;
+    });
   }
 
   async goToEditListing(listingUrl) {
@@ -943,6 +839,7 @@ class FacebookPoster {
   }
 
   async markListingAsSold(listingUrl) {
+    return this._withMutex(async () => {
     this.log('Navigating to listing to mark as sold...');
     await this.page.goto(listingUrl, {
       waitUntil: 'networkidle2',
@@ -989,9 +886,11 @@ class FacebookPoster {
     }
 
     return { success: sold, listingUrl };
+    });
   }
 
   async renewListing(listingUrl) {
+    return this._withMutex(async () => {
     this.log('Navigating to listing to renew...');
     await this.page.goto(listingUrl, {
       waitUntil: 'networkidle2',
@@ -1020,6 +919,7 @@ class FacebookPoster {
     }
 
     return { success: renewed, listingUrl };
+    });
   }
 
   /**
@@ -1028,6 +928,7 @@ class FacebookPoster {
    * @returns {object} Result with success status and post URL
    */
   async postVehicle(vehicle) {
+    return this._withMutex(async () => {
     // Rate limiting check
     if (this.postsToday >= this.maxPostsPerDay) {
       return {
@@ -1133,6 +1034,7 @@ class FacebookPoster {
         message: 'Post failed. DO NOT RETRY automatically — check the error and screenshot.'
       };
     }
+    });
   }
 
   /**
@@ -2150,31 +2052,15 @@ class FacebookPoster {
   }
 
   /**
-   * Close browser
+   * Release the poster page — do NOT close the shared browser.
    */
   async close() {
-    if (this.browser) {
-      if (this.isConnected) {
-        // Connected mode: close our tab but leave Chrome running
-        this.log('Closing tab and disconnecting from Chrome...');
-        if (this.page) {
-          await this.page.close().catch(() => {});
-        }
-        this.browser.disconnect();
-        this.log('Disconnected from Chrome (browser stays open)');
-      } else {
-        // Launched mode: save session and close the browser we spawned
-        this.log(`Closing browser (PID=${this.browserPid})...`);
-        await this.saveSession().catch(() => {});
-        await this.browser.close();
-        this.log(`Browser closed (PID=${this.browserPid})`);
-      }
-      this.browser = null;
-      this.page = null;
-      this.browserPid = null;
-    } else {
-      this.log('close() called but no browser to close');
-    }
+    const spId = this.salespersonId || 'default';
+    this.log('Releasing poster page...');
+    await SharedBrowser.releasePage(spId, 'poster').catch(() => {});
+    this.browser = null;
+    this.page = null;
+    this.log('Poster page released');
   }
 
   /**

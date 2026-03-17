@@ -94,4 +94,3 @@ class FbAuthAdapter {
 }
 
 module.exports = { FbAuthAdapter };
-

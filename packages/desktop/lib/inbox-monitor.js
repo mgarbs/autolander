@@ -8,17 +8,10 @@
  * humanDelay() patterns from facebook-poster.js.
  */
 
-const { addExtra } = require('puppeteer-extra');
-const puppeteerCore = require('puppeteer-core');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const puppeteer = addExtra(puppeteerCore);
-const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { SESSIONS_DIR, SCREENSHOTS_DIR, chromeProfileDir, ensureDirs } = require('./paths');
-
-// Register stealth plugin
-puppeteer.use(StealthPlugin());
+const { SESSIONS_DIR, SCREENSHOTS_DIR, ensureDirs } = require('./paths');
+const { SharedBrowser } = require('./shared-browser');
 
 ensureDirs();
 
@@ -33,206 +26,34 @@ async function humanDelay(min = 1000, max = 3000) {
 class InboxMonitor {
   constructor(options = {}) {
     this.salespersonId = options.salespersonId || 'default';
-    this.headless = process.env.BROWSER_VISIBLE === 'true' ? false : (options.headless !== false);
-    this.slowMo = options.slowMo || 50;
     this.browser = null;
     this.page = null;
     this.isLoggedIn = false;
-    this.isConnected = false; // true when connected to existing Chrome (vs launched)
-    this.debugPort = options.debugPort || process.env.CHROME_DEBUG_PORT || 9222;
     this.sessionFile = path.join(SESSIONS_DIR, `${this.salespersonId}_fb_session.json`);
     this._consecutiveErrors = 0;
     this._usingMessenger = false; // true when fallen back to Messenger
   }
 
   /**
-   * Fetch the WebSocket debugger URL from a running Chrome instance.
-   * Same pattern as facebook-poster.js.
-   */
-  async _getDebuggerWSEndpoint() {
-    return new Promise((resolve) => {
-      const req = http.get(`http://localhost:${this.debugPort}/json/version`, { timeout: 3000 }, (res) => {
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data);
-            resolve(json.webSocketDebuggerUrl || null);
-          } catch (_) {
-            resolve(null);
-          }
-        });
-      });
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => { req.destroy(); resolve(null); });
-    });
-  }
-
-  /**
-   * Auto-launch Chrome with remote debugging if not already running.
-   * Returns true if Chrome was launched (or was already running), false on failure.
-   */
-  async _ensureChromeDebug() {
-    // Check if already running
-    const existing = await this._getDebuggerWSEndpoint();
-    if (existing) return true;
-
-    console.log('[inbox-monitor] Chrome not running — auto-launching with remote debugging...');
-
-    const { spawn } = require('child_process');
-
-    // Find Chrome/Chromium cross-platform
-    const chromePaths = [
-      process.env.CHROME_PATH,
-      process.env.PUPPETEER_EXECUTABLE_PATH,
-      // Linux
-      '/usr/bin/chromium',
-      '/usr/bin/chromium-browser',
-      '/usr/bin/google-chrome',
-      '/usr/bin/google-chrome-stable',
-      // Windows
-      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-      path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe')
-    ].filter(Boolean);
-
-    let chromePath = null;
-    for (const p of chromePaths) {
-      if (fs.existsSync(p)) {
-        chromePath = p;
-        break;
-      }
-    }
-
-    if (!chromePath) {
-      console.error('[inbox-monitor] Could not find Chrome. Set CHROME_PATH env var.');
-      return false;
-    }
-
-    console.log(`[inbox-monitor] Found Chrome: ${chromePath}`);
-
-    const chromeArgs = [`--remote-debugging-port=${this.debugPort}`];
-    // Add --no-sandbox for Docker/Linux (typically runs as root)
-    if (process.platform !== 'win32') {
-      chromeArgs.push('--no-sandbox', '--disable-setuid-sandbox', '--headless=new');
-    }
-
-    const child = spawn(chromePath, chromeArgs, {
-      detached: true,
-      stdio: 'ignore'
-    });
-    child.unref();
-
-    // Wait for debugger to become available (up to 15 seconds)
-    for (let i = 0; i < 15; i++) {
-      await new Promise(r => setTimeout(r, 1000));
-      const ws = await this._getDebuggerWSEndpoint();
-      if (ws) {
-        console.log(`[inbox-monitor] Chrome launched — debugger active on port ${this.debugPort}`);
-        return true;
-      }
-    }
-
-    console.error('[inbox-monitor] Chrome launched but debugger not responding after 15s');
-    return false;
-  }
-
-  /**
-   * Initialize browser.
-   * Tries to connect to existing Chrome with remote debugging first.
-   * Auto-launches Chrome if not running.
-   * Falls back to launching a fresh Puppeteer instance as last resort.
+   * Initialize browser via SharedBrowser.
+   * Acquires the shared Chrome instance and opens an inbox tab.
    */
   async init() {
-    console.log('[inbox-monitor] Initializing browser...');
-
-    // Step 1: Ensure Chrome with remote debugging is running (auto-launch if needed)
-    await this._ensureChromeDebug();
-
-    // Step 2: Try connecting to existing Chrome
-    const wsEndpoint = await this._getDebuggerWSEndpoint();
-    if (wsEndpoint) {
-      try {
-        console.log(`[inbox-monitor] Connecting to Chrome on port ${this.debugPort}...`);
-        this.browser = await puppeteer.connect({
-          browserWSEndpoint: wsEndpoint,
-          defaultViewport: { width: 1366, height: 768 }
-        });
-        this.isConnected = true;
-
-        this.browser.on('disconnected', () => {
-          console.error('[inbox-monitor] Browser DISCONNECTED — Chrome was closed externally');
-          this.browser = null;
-          this.page = null;
-        });
-
-        this.page = await this.browser.newPage();
-        if (process.env.PROXY_USERNAME && process.env.PROXY_PASSWORD) {
-          await this.page.authenticate({
-            username: process.env.PROXY_USERNAME,
-            password: process.env.PROXY_PASSWORD
-          });
-        }
-        await this.page.setViewport({ width: 1366, height: 768 });
-        this.page.setDefaultNavigationTimeout(60000);
-
-        // Load saved cookies into the connected browser (needed for headless/Docker
-        // where Chrome doesn't have a pre-existing Facebook session)
-        await this.loadSession();
-
-        console.log('[inbox-monitor] Connected to existing Chrome');
-        return this;
-      } catch (e) {
-        console.warn(`[inbox-monitor] Failed to connect to Chrome: ${e.message}`);
-        console.warn('[inbox-monitor] Falling back to launching new browser...');
-      }
+    if (SharedBrowser.isAuthActive(this.salespersonId)) {
+      throw new Error('Login in progress — please wait for auth to complete');
     }
 
-    // Step 3: Fallback — launch new browser instance
-    console.warn('[inbox-monitor] No Chrome debugger available, launching standalone browser...');
+    console.log('[inbox-monitor] Initializing browser via SharedBrowser...');
 
-    const launchArgs = [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-blink-features=AutomationControlled',
-      '--window-size=1366,768'
-    ];
-    if (process.env.PROXY_URL) {
-      launchArgs.push(`--proxy-server=${process.env.PROXY_URL}`);
-      launchArgs.push('--ignore-certificate-errors');
-      console.log('[inbox] Using residential proxy:', process.env.PROXY_URL);
-    }
+    const slot = await SharedBrowser.acquire(this.salespersonId);
+    this.browser = slot.browser;
 
-    const profileDir = chromeProfileDir('inbox', this.salespersonId || 'default');
-    const { ensureChrome, killStaleProfileChrome } = require('./chrome-path');
-    await killStaleProfileChrome(profileDir);
-    const executablePath = await ensureChrome({ onProgress: (msg) => console.log('[inbox]', msg) });
+    this.page = await SharedBrowser.getPage(this.salespersonId, 'inbox');
 
-    this.browser = await puppeteer.launch({
-      headless: this.headless ? 'new' : false,
-      slowMo: this.slowMo,
-      executablePath,
-      userDataDir: profileDir,
-      args: launchArgs,
-      defaultViewport: { width: 1366, height: 768 }
-    });
-
-    this.page = await this.browser.newPage();
-    if (process.env.PROXY_USERNAME && process.env.PROXY_PASSWORD) {
-      await this.page.authenticate({
-        username: process.env.PROXY_USERNAME,
-        password: process.env.PROXY_PASSWORD
-      });
-    }
-
-    await this.page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    );
-
-    this.page.setDefaultNavigationTimeout(60000);
-
+    // Load saved cookies as fallback for fresh profiles
     await this.loadSession();
-    console.log('[inbox-monitor] Browser initialized (standalone mode)');
+
+    console.log('[inbox-monitor] Browser initialized (shared)');
     return this;
   }
 
@@ -1890,31 +1711,21 @@ class InboxMonitor {
    */
   isAlive() {
     try {
-      const browserConnected = typeof this.browser?.connected === 'boolean'
-        ? this.browser.connected
-        : (typeof this.browser?.isConnected === 'function' ? this.browser.isConnected() : true);
-      return !!(this.browser && browserConnected && this.page && !this.page.isClosed());
+      return !!(this.browser && this.page && !this.page.isClosed());
     } catch {
       return false;
     }
   }
 
+  /**
+   * Release the inbox page — do NOT close the shared browser.
+   */
   async close() {
-    if (this.browser) {
-      if (this.isConnected) {
-        // Connected mode: leave Chrome running and just disconnect.
-        console.log('[inbox-monitor] Disconnecting from Chrome...');
-        this.browser.disconnect();
-        console.log('[inbox-monitor] Disconnected from Chrome (browser stays open)');
-      } else {
-        // Launched mode: save session and close the browser we spawned
-        await this.saveSession().catch(() => {});
-        await this.browser.close();
-        console.log('[inbox-monitor] Browser closed');
-      }
-      this.browser = null;
-      this.page = null;
-    }
+    console.log('[inbox-monitor] Releasing inbox page...');
+    await SharedBrowser.releasePage(this.salespersonId, 'inbox').catch(() => {});
+    this.browser = null;
+    this.page = null;
+    console.log('[inbox-monitor] Inbox page released');
   }
 }
 
