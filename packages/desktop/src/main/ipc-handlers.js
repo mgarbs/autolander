@@ -523,35 +523,33 @@ function registerIpcHandlers(ipcMain) {
   ipcMain.handle('fb:login', async () => {
     try {
       const adapter = getIpcFbAuthAdapter();
-      // Start login without awaiting — frames and status stream via fb:frame / fb:progress events.
-      // The promise resolves when session ends (success or timeout).
-      // Small delay to let any previous session's Chrome fully exit and
-      // release the SingletonLock before we launch a new one.
+      // Register a callback that fires when FB login ACTUALLY succeeds
+      // (cookies saved to disk). startLogin() resolves when the browser opens,
+      // NOT when the user finishes logging in — so .then() is too early.
+      adapter.onLoginSuccess = () => {
+        console.log('[ipc] FB login success callback fired');
+        const valid = validateLocalFbSession();
+        updateAgentFbSessionStatus(valid);
+        if (valid && agentCredentials.serverUrl && agentCredentials.accessToken && !inboxPolling?._active) {
+          try {
+            if (!inboxPolling) {
+              const { InboxPolling } = require('../worker/inbox-polling');
+              inboxPolling = new InboxPolling({ fbInboxAdapter: getIpcFbInboxAdapter() });
+            }
+            inboxPolling.start(getIpcFbInboxAdapter(), {
+              serverUrl: agentCredentials.serverUrl,
+              accessToken: agentCredentials.accessToken,
+            });
+            console.log('[ipc] InboxPolling started after FB login');
+          } catch (err) {
+            console.error('[ipc] InboxPolling start error:', err.message);
+          }
+        }
+      };
+
+      // Small delay to let any previous session's Chrome fully exit
       await new Promise((r) => setTimeout(r, 1500));
       adapter.startLogin()
-        .then(() => {
-          // startLogin() resolves when the session ends (success or timeout).
-          // Re-check the actual session file on disk to determine if login succeeded,
-          // since the return value only has { state, salespersonId } from session start.
-          const valid = validateLocalFbSession();
-          updateAgentFbSessionStatus(valid);
-          // Start inbox polling now that FB session is established
-          if (valid && agentCredentials.serverUrl && agentCredentials.accessToken && !inboxPolling?._active) {
-            try {
-              if (!inboxPolling) {
-                const { InboxPolling } = require('../worker/inbox-polling');
-                inboxPolling = new InboxPolling({ fbInboxAdapter: getIpcFbInboxAdapter() });
-              }
-              inboxPolling.start(getIpcFbInboxAdapter(), {
-                serverUrl: agentCredentials.serverUrl,
-                accessToken: agentCredentials.accessToken,
-              });
-              console.log('[ipc] InboxPolling started after FB login');
-            } catch (err) {
-              console.error('[ipc] InboxPolling start error:', err.message);
-            }
-          }
-        })
         .catch((err) => {
           console.error('[ipc] fb:login session error:', err.message);
           // Don't show transient "Failed to launch browser" errors —

@@ -6,6 +6,8 @@ class FbAuthAdapter {
     this.salespersonId = salespersonId;
     this.mainWindow = mainWindow;
     this.activeSession = null;
+    /** Called when FB login succeeds (cookies saved). Set by ipc-handlers. */
+    this.onLoginSuccess = null;
   }
 
   setMainWindow(mainWindow) {
@@ -45,6 +47,9 @@ class FbAuthAdapter {
         message: s.message,
         percent: this._statusPercent(s.state),
       });
+      if (s.state === 'success' && this.onLoginSuccess) {
+        this.onLoginSuccess();
+      }
     };
 
     this.activeSession = session;
