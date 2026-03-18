@@ -20,7 +20,7 @@ class FbInboxAdapter {
 
   async setSalespersonId(id) {
     if (this.salespersonId === id) return;
-    // Release inbox page — shared browser teardown handled by ipc-handlers
+    // Release inbox page - shared browser teardown handled by ipc-handlers
     if (this.monitor) {
       await this.monitor.close().catch(() => {});
       this.monitor = null;
@@ -43,26 +43,35 @@ class FbInboxAdapter {
   }
 
   async checkInbox() {
+    await this._getMonitor();
     const unlock = await SharedBrowser.lockNavigation(this.salespersonId, 'inbox');
     try {
       const monitor = await this._getMonitor();
       await monitor.navigateToInbox();
 
-      const threads = await monitor.getUnreadThreads();
+      const threads = await monitor.getActiveListingThreads();
+      console.log(`[fb-inbox] ${threads.length} active listing threads — opening all (cloud dedup handles duplicates)`);
       const results = [];
       this.threadCache.clear();
 
-      for (const thread of threads) {
-        this.threadCache.set(thread.threadId, thread);
+      for (let i = 0; i < threads.length; i += 1) {
+        const thread = threads[i];
+        this.threadCache.set(thread.threadId, { ...thread });
+
         const messages = await monitor.openThread(thread);
+
         const vehicleMatch = monitor.parseVehicleFromText(thread.listingTitle) || null;
-        results.push({
-          threadId: thread.threadId,
-          buyerName: thread.buyerName,
-          listingTitle: thread.listingTitle || '',
+        const hydratedThread = {
+          ...thread,
           messages,
           vehicleMatch,
-        });
+        };
+        this.threadCache.set(thread.threadId, hydratedThread);
+        results.push(hydratedThread);
+
+        if (i < threads.length - 1) {
+          await monitor.navigateToInbox();
+        }
       }
 
       this.lastCheck = new Date().toISOString();
@@ -73,42 +82,24 @@ class FbInboxAdapter {
   }
 
   async sendMessage(threadId, text, expectedBuyer, listingTitle) {
+    await this._getMonitor();
     const unlock = await SharedBrowser.lockNavigation(this.salespersonId, 'inbox');
     try {
       const monitor = await this._getMonitor();
+      const buyerName = expectedBuyer || '';
+      const resolvedListingTitle = listingTitle || '';
+
+      // Always navigate to inbox and click the thread row to open it.
+      // URL-based navigation is unreliable — _captureActiveThreadUrl grabs
+      // random Messenger links from the page, not the actual thread URL.
       await monitor.navigateToInbox();
+      const threadToOpen = {
+        threadId,
+        buyerName,
+        listingTitle: resolvedListingTitle,
+      };
 
-      // 1. Check cache first
-      let thread = this.threadCache.get(threadId);
-
-      // 2. Try unread threads
-      if (!thread) {
-        const unreadThreads = await monitor.getUnreadThreads();
-        for (const t of unreadThreads) {
-          this.threadCache.set(t.threadId, t);
-        }
-        thread = this.threadCache.get(threadId);
-      }
-
-      // 3. Try ALL visible threads (not just unread)
-      if (!thread) {
-        const allThreads = await monitor.getAllThreads ? await monitor.getAllThreads() : [];
-        for (const t of allThreads) {
-          this.threadCache.set(t.threadId, t);
-        }
-        thread = this.threadCache.get(threadId);
-      }
-
-      // 4. Last resort: construct a minimal thread object and try to open by ID
-      if (!thread) {
-        console.warn(`[fb-inbox] Thread ${threadId} not found in lists, attempting direct open`);
-        thread = { threadId, buyerName: expectedBuyer || '', listingTitle: listingTitle || '' };
-      }
-
-      const buyerName = expectedBuyer || thread.buyerName;
-      const resolvedListingTitle = listingTitle || thread.listingTitle || '';
-
-      await monitor.openThread({ ...thread, buyerName, listingTitle: resolvedListingTitle });
+      await monitor.openThread(threadToOpen);
       const sent = await monitor.sendMessage(text, buyerName);
       return { sent };
     } finally {
@@ -131,7 +122,9 @@ class FbInboxAdapter {
       }
       if (sendProgress) sendProgress('sending', `Sending reply to ${expectedBuyer || 'buyer'}...`, 50);
       const result = await this.sendMessage(threadId, text, expectedBuyer, listingTitle);
-      if (sendProgress) sendProgress('sent', 'Reply sent', 100);
+      if (sendProgress) {
+        sendProgress(result && result.sent === false ? 'failed' : 'sent', result && result.sent === false ? 'Reply failed' : 'Reply sent', 100);
+      }
       return result;
     }
 
@@ -157,9 +150,10 @@ class FbInboxAdapter {
   }
 
   async destroy() {
-    if (!this.monitor) return;
-    await this.monitor.close().catch(() => {});
-    this.monitor = null;
+    if (this.monitor) {
+      await this.monitor.close().catch(() => {});
+      this.monitor = null;
+    }
     this.threadCache.clear();
   }
 }

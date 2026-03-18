@@ -155,13 +155,15 @@ const SALES_TOOLS = [
   },
   {
     name: 'update_buyer_info',
-    description: 'Save buyer contact information collected during conversation. Call this as soon as the buyer provides their email, phone number, or full name.',
+    description: 'Save buyer information collected during conversation. Call this as soon as the buyer provides their email, phone number, full name, financing preference (cash/financing/lease), or trade-in vehicle details.',
     input_schema: {
       type: 'object',
       properties: {
         email: { type: 'string' },
         phone: { type: 'string' },
         fullName: { type: 'string' },
+        financing: { type: 'string', description: 'Financing preference: "financing", "cash", "lease", or other' },
+        tradeIn: { type: 'string', description: 'Trade-in vehicle description if the buyer mentions one' },
       },
     },
   },
@@ -230,6 +232,7 @@ function buildSalesSystemPrompt(conversation, options) {
     '- ALWAYS respond with exactly ONE single message. NEVER use bullet points on separate lines. NEVER split into multiple messages. Write everything as one flowing paragraph.',
     '- ALWAYS advance the conversation forward. Never go backwards.',
     '- CONTACT INFO CAPTURE: When the buyer provides an email address or phone number in ANY message, you MUST IMMEDIATELY call update_buyer_info with that info BEFORE writing your response text. This is non-negotiable. Missing contact info = lost deal.',
+    '- DEAL INFO CAPTURE: When the buyer mentions financing preference (cash, financing, lease) or a trade-in vehicle, IMMEDIATELY call update_buyer_info with the financing or tradeIn field.',
     '- ACKNOWLEDGMENT: When you receive contact info (email/phone), explicitly acknowledge it in your reply. Example: "Got your email, Romeo!" or "Thanks for the number!" This confirms to the buyer you captured it.',
     '',
     'RESPONSE RULES:',
@@ -267,6 +270,8 @@ function buildSalesSystemPrompt(conversation, options) {
     `- Name: ${conversation.buyerName || 'Unknown'}`,
     `- Email: ${conversation.buyerEmail || 'not yet collected'}`,
     `- Phone: ${conversation.buyerPhone || 'not yet collected'}`,
+    `- Financing: ${conversation.financingType || 'not yet asked'}`,
+    `- Trade-in: ${conversation.tradeInDescription || 'not yet asked'}`,
     `- Info still needed: ${missingInfo.join(', ')}`,
     '',
     'WHAT HAS ALREADY HAPPENED (DO NOT REPEAT THESE):',
@@ -471,6 +476,8 @@ async function executeToolCall(toolName, toolInput, context) {
       const updateData = {};
       if (toolInput.fullName) updateData.buyerName = toolInput.fullName;
       if (toolInput.email) updateData.buyerEmail = toolInput.email;
+      if (toolInput.financing) updateData.financingType = toolInput.financing;
+      if (toolInput.tradeIn) updateData.tradeInDescription = toolInput.tradeIn;
       if (toolInput.phone) updateData.buyerPhone = toolInput.phone;
       if (Object.keys(updateData).length > 0) {
         await prisma.conversation.update({ where: { id: conversation.id }, data: updateData });

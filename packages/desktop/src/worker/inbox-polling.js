@@ -78,6 +78,11 @@ class InboxPolling extends EventEmitter {
         if (this._running) return;
         this._running = true;
         this._lastPoll = Date.now();
+        const POLL_TIMEOUT = 180 * 1000;
+        const timeoutId = setTimeout(() => {
+            console.error('[inbox-polling] Poll timed out after 180s - forcing reset');
+            this._running = false;
+        }, POLL_TIMEOUT);
 
         try {
             const result = await this.fbInboxAdapter.checkInbox();
@@ -90,13 +95,33 @@ class InboxPolling extends EventEmitter {
                 const messages = Array.isArray(thread?.messages) ? thread.messages : [];
                 if (messages.length === 0) continue;
 
-                const synced = await this._syncThread(threadId, thread, messages);
-                if (synced) {
-                    this._messagesForwarded += 1;
+                const lastMsg = messages[messages.length - 1];
+                if (!lastMsg || !lastMsg.isBuyer) {
+                    console.log(`[inbox-polling] ${thread.buyerName}: last message is ours, skipping`);
+                    continue;
+                }
+
+                console.log(`[inbox-polling] ${thread.buyerName}: buyer spoke last, requesting response...`);
+
+                const reply = await this._getResponse(threadId, thread, messages);
+
+                if (reply) {
+                    console.log(`[inbox-polling] ${thread.buyerName}: sending reply (${reply.length} chars)`);
+                    try {
+                        await this.fbInboxAdapter.sendMessage(
+                            threadId,
+                            reply,
+                            thread.buyerName,
+                            thread.listingTitle
+                        );
+                        console.log(`[inbox-polling] ${thread.buyerName}: reply sent to FB`);
+                        this._messagesForwarded += 1;
+                    } catch (err) {
+                        console.error(`[inbox-polling] ${thread.buyerName}: send failed: ${err.message}`);
+                    }
                 }
             }
 
-            // Emit events for compatibility
             if (threads.length > 0) {
                 this.emit('poll-complete', { threadCount: threads.length });
             }
@@ -104,18 +129,19 @@ class InboxPolling extends EventEmitter {
             console.error('[inbox-polling] Error:', err.message);
             this.emit('poll-error', { error: err.message });
         } finally {
+            clearTimeout(timeoutId);
             this._running = false;
         }
     }
 
-    async _syncThread(threadId, thread, messages) {
+    async _getResponse(threadId, thread, messages) {
         if (!this.serverUrl || !this.accessToken) {
-            console.warn('[inbox-polling] Missing serverUrl or accessToken for sync');
-            return false;
+            console.warn('[inbox-polling] Missing serverUrl or accessToken');
+            return null;
         }
 
         const endpoint = new URL(
-            `/api/conversations/${encodeURIComponent(threadId)}/sync`,
+            `/api/conversations/${encodeURIComponent(threadId)}/respond`,
             this.serverUrl
         ).toString();
 
@@ -141,18 +167,21 @@ class InboxPolling extends EventEmitter {
             if (!response.ok) {
                 let details = '';
                 try { details = await response.text(); } catch {}
-                console.error(`[inbox-polling] Sync failed for ${threadId}: HTTP ${response.status} ${details}`);
-                return false;
+                console.error(`[inbox-polling] Respond failed for ${threadId}: HTTP ${response.status} ${details}`);
+                return null;
             }
 
             const result = await response.json();
-            if (result.newInbound > 0) {
-                console.log(`[inbox-polling] Synced ${threadId}: ${result.newInbound} new inbound messages`);
+            if (result.reply) {
+                return result.reply;
             }
-            return true;
+            if (result.reason) {
+                console.log(`[inbox-polling] ${thread.buyerName}: no reply (${result.reason})`);
+            }
+            return null;
         } catch (err) {
-            console.error(`[inbox-polling] Sync error for ${threadId}:`, err.message);
-            return false;
+            console.error(`[inbox-polling] Respond error for ${threadId}:`, err.message);
+            return null;
         }
     }
 

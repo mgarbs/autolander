@@ -29,7 +29,7 @@ module.exports = function createConversationsRouter(prisma) {
     const rawTitle = title.trim();
     const yearMatch = rawTitle.match(/^(\d{4})\s+(\S+)\s+(\S+)/);
     const noYearMatch = !yearMatch && rawTitle.match(/^(\S+)\s+(\S+)/);
-    const where = { orgId };
+    const where = { orgId, status: 'ACTIVE' };
     if (yearMatch) {
       where.year = parseInt(yearMatch[1], 10);
       where.make = { contains: yearMatch[2], mode: 'insensitive' };
@@ -46,6 +46,10 @@ module.exports = function createConversationsRouter(prisma) {
       console.warn('[auto-reply] Vehicle lookup failed:', err.message);
       return null;
     }
+  }
+
+  function didSendMessageFail(result) {
+    return Boolean(result && typeof result === 'object' && result.sent === false);
   }
 
   async function triggerAutoReply(convId, orgId, app) {
@@ -202,6 +206,8 @@ module.exports = function createConversationsRouter(prisma) {
               if (a.input.email) parts.push(`email: ${a.input.email}`);
               if (a.input.phone) parts.push(`phone: ${a.input.phone}`);
               if (a.input.fullName) parts.push(`name: ${a.input.fullName}`);
+              if (a.input.financing) parts.push(`financing: ${a.input.financing}`);
+              if (a.input.tradeIn) parts.push(`trade-in: ${a.input.tradeIn}`);
               return `Saved buyer info - ${parts.join(', ')}`;
             }
             case 'escalate_to_human':
@@ -284,19 +290,28 @@ module.exports = function createConversationsRouter(prisma) {
             const onlineAgents = agentGateway.getOnlineAgents(orgId);
             if (onlineAgents.length > 0) {
               try {
-                await dispatcher.dispatch(
+                const dispatchResult = await dispatcher.dispatch(
                   orgId,
                   onlineAgents[0].id,
                   Commands.SEND_MESSAGE,
                   {
                     threadId: freshConv.threadId || freshConv.id,
+                    fbThreadUrl: freshConv.fbThreadUrl || null,
                     text: aiResult.text,
                     expectedBuyer: freshConv.buyerName,
                     listingTitle: dispatchListingTitle,
                     messageId: outboundMsg.id,
                   }
                 );
-                console.log(`[auto-reply] Sent reply for conv ${convId}, msg ${outboundMsg.id}`);
+                if (didSendMessageFail(dispatchResult)) {
+                  await prisma.message.update({
+                    where: { id: outboundMsg.id },
+                    data: { status: 'FAILED', attempts: 1 },
+                  });
+                  console.warn(`[auto-reply] Agent reported send failure for conv ${convId}, msg ${outboundMsg.id}`);
+                } else {
+                  console.log(`[auto-reply] Sent reply for conv ${convId}, msg ${outboundMsg.id}`);
+                }
               } catch (err) {
                 // Dispatch failed — mark back to PENDING so sweep can retry
                 await prisma.message.update({
@@ -366,18 +381,19 @@ module.exports = function createConversationsRouter(prisma) {
 
   router.get('/pipeline', async (req, res) => {
     const orgId = req.orgId;
+    const baseWhere = { orgId, archivedAt: null };
     const [hot, warm, cold, dead] = await Promise.all([
-      prisma.conversation.count({ where: { orgId, leadScore: { gte: 70 } } }),
-      prisma.conversation.count({ where: { orgId, leadScore: { gte: 45, lt: 70 } } }),
-      prisma.conversation.count({ where: { orgId, leadScore: { gte: 20, lt: 45 } } }),
-      prisma.conversation.count({ where: { orgId, leadScore: { lt: 20 } } }),
+      prisma.conversation.count({ where: { ...baseWhere, leadScore: { gte: 70 } } }),
+      prisma.conversation.count({ where: { ...baseWhere, leadScore: { gte: 45, lt: 70 } } }),
+      prisma.conversation.count({ where: { ...baseWhere, leadScore: { gte: 20, lt: 45 } } }),
+      prisma.conversation.count({ where: { ...baseWhere, leadScore: { lt: 20 } } }),
     ]);
     res.json({ hot, warm, cold, dead });
   });
 
   router.get('/', async (req, res) => {
     const { sentiment, state, agentId, limit = '50', offset = '0' } = req.query;
-    const where = { orgId: req.orgId };
+    const where = { orgId: req.orgId, archivedAt: null };
 
     if (sentiment === 'hot') where.leadScore = { gte: 70 };
     else if (sentiment === 'warm') where.leadScore = { gte: 45, lt: 70 };
@@ -421,12 +437,239 @@ module.exports = function createConversationsRouter(prisma) {
     res.status(201).json(conversation);
   });
 
+  router.post('/:threadId/respond', async (req, res) => {
+    const orgId = req.orgId;
+    const userId = req.user?.id || req.user?.sub;
+    const threadId = req.params.threadId;
+    const { buyerName, listingTitle, messages: scrapedMessages } = req.body;
+
+    if (!Array.isArray(scrapedMessages) || scrapedMessages.length === 0) {
+      return res.json({ reply: null });
+    }
+
+    const lastMsg = scrapedMessages[scrapedMessages.length - 1];
+    if (!lastMsg || !lastMsg.isBuyer) {
+      return res.json({ reply: null, reason: 'last_message_not_from_buyer' });
+    }
+
+    let conv = await prisma.conversation.findFirst({
+      where: { threadId, orgId },
+      include: { vehicle: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!conv) {
+      const matchedVehicleId = await resolveVehicle(orgId, listingTitle);
+      conv = await prisma.conversation.create({
+        data: {
+          threadId,
+          orgId,
+          buyerName: buyerName || 'Unknown Buyer',
+          buyerId: null,
+          state: 'NEW',
+          leadScore: 20,
+          vehicleId: matchedVehicleId,
+          agentId: userId,
+          lastMessageAt: new Date(),
+        },
+        include: { vehicle: true },
+      });
+      console.log(`[respond] Created conversation ${conv.id} for thread ${threadId}`);
+    }
+
+    if (!conv.vehicleId && listingTitle) {
+      const matchedVehicleId = await resolveVehicle(orgId, listingTitle);
+      if (matchedVehicleId) {
+        conv = await prisma.conversation.update({
+          where: { id: conv.id },
+          data: { vehicleId: matchedVehicleId },
+          include: { vehicle: true },
+        });
+      }
+    }
+
+    if (
+      buyerName &&
+      buyerName !== 'Unknown Buyer' &&
+      buyerName !== 'Unknown' &&
+      (conv.buyerName === 'Unknown Buyer' || conv.buyerName === 'Unknown')
+    ) {
+      conv = await prisma.conversation.update({
+        where: { id: conv.id },
+        data: { buyerName },
+        include: { vehicle: true },
+      });
+    }
+
+    const updates = {};
+    for (const m of scrapedMessages) {
+      if (!m.isBuyer) continue;
+      const text = m.text || '';
+      if (!conv.buyerEmail) {
+        const emailMatch = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+        if (emailMatch) updates.buyerEmail = emailMatch[0].toLowerCase();
+      }
+      if (!conv.buyerPhone) {
+        const phoneMatch = text.match(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/);
+        if (phoneMatch) {
+          const digits = phoneMatch[0].replace(/\D/g, '');
+          if (digits.length >= 10) {
+            updates.buyerPhone = digits.length === 11 && digits[0] === '1' ? digits.slice(1) : digits;
+          }
+        }
+      }
+    }
+    if (Object.keys(updates).length > 0) {
+      conv = await prisma.conversation.update({
+        where: { id: conv.id },
+        data: updates,
+        include: { vehicle: true },
+      });
+    }
+
+    const lastAutoReply = await prisma.message.findFirst({
+      where: { conversationId: conv.id, direction: 'OUTBOUND', intent: 'auto_reply' },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (lastAutoReply) {
+      const elapsed = Date.now() - lastAutoReply.createdAt.getTime();
+      if (elapsed < 5 * 60 * 1000) {
+        return res.json({ reply: null, reason: 'cooldown' });
+      }
+    }
+
+    const formattedMessages = [];
+    for (const m of scrapedMessages) {
+      const role = m.isBuyer ? 'user' : 'assistant';
+      const text = (m.text || '').trim();
+      if (!text) continue;
+      if (
+        formattedMessages.length > 0 &&
+        formattedMessages[formattedMessages.length - 1].role === role
+      ) {
+        formattedMessages[formattedMessages.length - 1].content += `\n${text}`;
+      } else {
+        formattedMessages.push({ role, content: text });
+      }
+    }
+
+    const orgSettings = await prisma.orgSettings.findUnique({ where: { orgId } });
+    const org = await prisma.organization.findFirst({ where: { id: orgId } });
+
+    const toolContext = { prisma, orgSettings, conversation: conv, orgId };
+    let aiResult = await aiService.generateResponse(conv, formattedMessages, {
+      orgId,
+      dealerName: org?.name || 'our dealership',
+      orgSettings,
+    });
+
+    const MAX_TOOL_ROUNDS = 4;
+    let round = 0;
+    while (aiResult.toolCalls && aiResult.toolCalls.length > 0 && round < MAX_TOOL_ROUNDS) {
+      round += 1;
+      const toolResults = [];
+      for (const tc of aiResult.toolCalls) {
+        const result = await aiService.executeToolCall(tc.name, tc.input, toolContext);
+        toolResults.push({ tool_use_id: tc.id, content: result });
+      }
+
+      conv = await prisma.conversation.findFirst({
+        where: { id: conv.id },
+        include: { vehicle: true },
+      });
+      if (!conv) break;
+      toolContext.conversation = conv;
+
+      aiResult = await aiService.continueWithToolResults(
+        conv,
+        formattedMessages,
+        aiResult.fullMessages,
+        toolResults,
+        {
+          orgId,
+          dealerName: org?.name || 'our dealership',
+          orgSettings,
+        }
+      );
+    }
+
+    if (!conv) return res.json({ reply: null });
+
+    let replyText = aiResult.text || '';
+    if (replyText.length > 280) {
+      let truncated = replyText.slice(0, 280);
+      const cutPoint = Math.max(
+        truncated.lastIndexOf('.'),
+        truncated.lastIndexOf('?'),
+        truncated.lastIndexOf('!')
+      );
+      if (cutPoint > 150) truncated = truncated.slice(0, cutPoint + 1);
+      replyText = truncated;
+    }
+
+    if (replyText) {
+      // Save all new buyer messages to DB (for UI display)
+      for (const m of scrapedMessages) {
+        if (!m.isBuyer) continue;
+        const text = (m.text || '').trim();
+        if (!text) continue;
+        const existing = await prisma.message.findFirst({
+          where: { conversationId: conv.id, direction: 'INBOUND', text },
+        });
+        if (!existing) {
+          await prisma.message.create({
+            data: { conversationId: conv.id, direction: 'INBOUND', text },
+          });
+        }
+      }
+
+      await prisma.message.create({
+        data: {
+          conversationId: conv.id,
+          direction: 'OUTBOUND',
+          text: replyText,
+          intent: 'auto_reply',
+          status: 'SENT',
+          attempts: 1,
+        },
+      });
+
+      const newState = conv.state === 'NEW' ? 'ENGAGED' : conv.state;
+      await prisma.conversation.update({
+        where: { id: conv.id },
+        data: { state: newState, lastMessageAt: new Date() },
+      });
+    }
+
+    const freshMessages = await prisma.message.findMany({
+      where: { conversationId: conv.id },
+      orderBy: { createdAt: 'asc' },
+      take: 20,
+    });
+    const scoreResult = await aiService.scoreLeadAI(conv, freshMessages, { orgId });
+    await prisma.conversation.update({
+      where: { id: conv.id },
+      data: { leadScore: scoreResult.score, sentimentScore: scoreResult.score },
+    });
+
+    const clientGateway = req.app.get('clientGateway');
+    if (clientGateway) {
+      clientGateway.broadcast(orgId, {
+        type: 'lead:updated',
+        data: { buyerId: conv.id, conversationId: conv.id },
+      });
+    }
+
+    console.log(`[respond] ${buyerName}: "${replyText?.slice(0, 60)}..." score=${scoreResult.score}`);
+    res.json({ reply: replyText || null, conversationId: conv.id });
+  });
+
   router.post('/:threadId/sync', async (req, res) => {
     const orgId = req.orgId;
     const userId = req.user?.id || req.user?.sub;
     const app = req.app;
     const threadId = req.params.threadId;
-    const { buyerName, listingTitle, messages: scrapedMessages } = req.body;
+    const { buyerName, listingTitle, messages: scrapedMessages, fbThreadUrl } = req.body;
 
     if (!Array.isArray(scrapedMessages) || scrapedMessages.length === 0) {
       return res.status(200).json({ synced: 0, newInbound: 0 });
@@ -443,25 +686,26 @@ module.exports = function createConversationsRouter(prisma) {
     // preview text bleeds into the listing title (e.g. "NavigatorI have a trade").
     if (!conv && buyerName) {
       const matchedVehicleId = await resolveVehicle(orgId, listingTitle);
-      const fallbackWhere = {
-        orgId,
-        buyerName: { equals: buyerName, mode: 'insensitive' },
-        archivedAt: null,
-      };
-      if (matchedVehicleId) fallbackWhere.vehicleId = matchedVehicleId;
-      const fallback = await prisma.conversation.findFirst({
-        where: fallbackWhere,
-        include: { vehicle: true },
-        orderBy: { lastMessageAt: 'desc' },
-      });
-      if (fallback) {
-        console.log(`[sync] ThreadId drift: "${threadId}" matched existing conv ${fallback.id} (thread "${fallback.threadId}") by buyer+vehicle`);
-        // Update the threadId to the latest so future syncs hit the fast path
-        conv = await prisma.conversation.update({
-          where: { id: fallback.id },
-          data: { threadId },
+      if (matchedVehicleId) {
+        const fallback = await prisma.conversation.findFirst({
+          where: {
+            orgId,
+            buyerName: { equals: buyerName, mode: 'insensitive' },
+            vehicleId: matchedVehicleId,
+            archivedAt: null,
+          },
           include: { vehicle: true },
+          orderBy: { lastMessageAt: 'desc' },
         });
+        if (fallback) {
+          console.log(`[sync] ThreadId drift: "${threadId}" matched existing conv ${fallback.id} by buyer+vehicle`);
+          // Update the threadId to the latest so future syncs hit the fast path
+          conv = await prisma.conversation.update({
+            where: { id: fallback.id },
+            data: { threadId },
+            include: { vehicle: true },
+          });
+        }
       }
     }
 
@@ -498,6 +742,7 @@ module.exports = function createConversationsRouter(prisma) {
       conv = await prisma.conversation.create({
         data: {
           threadId,
+          fbThreadUrl: fbThreadUrl || null,
           orgId,
           buyerName: buyerName || 'Unknown Buyer',
           buyerId: null,
@@ -512,6 +757,25 @@ module.exports = function createConversationsRouter(prisma) {
         include: { vehicle: true },
       });
       console.log(`[sync] Created conversation ${conv.id} for thread ${threadId}`);
+    }
+
+    if (conv && fbThreadUrl && !conv.fbThreadUrl) {
+      conv = await prisma.conversation.update({
+        where: { id: conv.id },
+        data: { fbThreadUrl },
+        include: { vehicle: true },
+      });
+    }
+
+    // Update buyer name if currently "Unknown" and sync provides a real name
+    if (buyerName && buyerName !== 'Unknown Buyer' && buyerName !== 'Unknown' &&
+        (conv.buyerName === 'Unknown Buyer' || conv.buyerName === 'Unknown')) {
+      conv = await prisma.conversation.update({
+        where: { id: conv.id },
+        data: { buyerName },
+        include: { vehicle: true },
+      });
+      console.log(`[sync] Updated buyer name from "Unknown" to "${buyerName}" for conv ${conv.id}`);
     }
 
     const existingMessages = await prisma.message.findMany({
@@ -552,6 +816,12 @@ module.exports = function createConversationsRouter(prisma) {
         }
 
         if (!matched) {
+          // Reject scraped inbound messages that match existing outbound text.
+          const isEcho = scrapedDir === 'INBOUND' && existingMessages.some(
+            m => m.direction === 'OUTBOUND' && m.text.trim().toLowerCase() === scrapedText.toLowerCase()
+          );
+          if (isEcho) continue;
+
           newMessages.push({ text: scrapedText, direction: scrapedDir });
         }
       }
@@ -563,15 +833,30 @@ module.exports = function createConversationsRouter(prisma) {
           .filter(m => m.direction === 'INBOUND')
           .map(m => m.text.trim().toLowerCase())
       );
+      // Also track outbound messages - the scraper sometimes mislabels our AI
+      // responses as buyer messages. If a "buyer" message matches something we
+      // already sent, it's an echo and must be rejected.
+      const existingOutbound = new Set(
+        existingMessages
+          .filter(m => m.direction === 'OUTBOUND')
+          .map(m => m.text.trim().toLowerCase())
+      );
       const buyerNorm = (conv.buyerName || '').toLowerCase().replace(/[^a-z\s]/g, '').trim();
 
       for (const scraped of scrapedMessages) {
-        if (!scraped.isBuyer) continue; // only care about new inbound on re-syncs
+        if (!scraped.isBuyer) { console.log(`[sync-debug] SKIP non-buyer: "${(scraped.text||'').slice(0,40)}"`); continue; }
         const scrapedText = (scraped.text || '').trim();
-        if (!scrapedText) continue;
+        if (!scrapedText) { console.log(`[sync-debug] SKIP empty`); continue; }
 
         // Skip if this exact text already exists in the conversation
-        if (existingInbound.has(scrapedText.toLowerCase())) continue;
+        if (existingInbound.has(scrapedText.toLowerCase())) { console.log(`[sync-debug] SKIP dup-inbound: "${scrapedText.slice(0,40)}"`); continue; }
+
+        // Skip if this text matches an OUTBOUND message we already sent
+        // (scraper mislabeled our AI response as a buyer message).
+        if (existingOutbound.has(scrapedText.toLowerCase())) {
+          console.log(`[sync] Rejected echo: "${scrapedText.slice(0, 60)}..." matches existing outbound`);
+          continue;
+        }
 
         // Skip if the message is just the buyer's name (scraper artifact)
         if (scrapedText.length < 60) {
@@ -579,11 +864,13 @@ module.exports = function createConversationsRouter(prisma) {
           const lenDiff = Math.abs(normText.length - buyerNorm.length);
           if (normText && buyerNorm && normText.length > 1 && lenDiff <= 3) {
             if (normText === buyerNorm || buyerNorm.startsWith(normText) || normText.startsWith(buyerNorm)) {
+              console.log(`[sync-debug] SKIP name-label: "${scrapedText}"`);
               continue;
             }
           }
         }
 
+        console.log(`[sync-debug] NEW: "${scrapedText.slice(0,60)}"`);
         newMessages.push({ text: scrapedText, direction: 'INBOUND' });
         // Add to set so we don't double-add within the same batch
         existingInbound.add(scrapedText.toLowerCase());
@@ -647,6 +934,45 @@ module.exports = function createConversationsRouter(prisma) {
     res.status(200).json({ synced: scrapedMessages.length, newInbound: newInboundCount, conversationId: conv.id });
   });
 
+  router.put('/:id/archive', async (req, res) => {
+    const result = await prisma.conversation.updateMany({
+      where: { id: req.params.id, orgId: req.orgId },
+      data: { archivedAt: new Date() },
+    });
+    if (result.count === 0) return res.status(404).json({ error: 'Conversation not found.' });
+    res.json({ success: true, archived: true });
+  });
+
+  router.put('/:id/unarchive', async (req, res) => {
+    const result = await prisma.conversation.updateMany({
+      where: { id: req.params.id, orgId: req.orgId },
+      data: { archivedAt: null },
+    });
+    if (result.count === 0) return res.status(404).json({ error: 'Conversation not found.' });
+    res.json({ success: true, archived: false });
+  });
+
+  router.put('/messages/:messageId/status', async (req, res) => {
+    const { status } = req.body;
+    if (!['SENT', 'DELIVERED', 'FAILED', 'PENDING'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    const message = await prisma.message.findFirst({
+      where: { id: req.params.messageId },
+      include: { conversation: true },
+    });
+    if (!message || message.conversation.orgId !== req.orgId) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    await prisma.message.update({
+      where: { id: req.params.messageId },
+      data: { status },
+    });
+    res.json({ success: true });
+  });
+
   router.get('/:id', async (req, res) => {
     // Try by id first, then by threadId
     let conversation = await prisma.conversation.findFirst({
@@ -700,9 +1026,12 @@ module.exports = function createConversationsRouter(prisma) {
   });
 
   router.post('/:id/messages', async (req, res) => {
-    const { direction, text, intent } = req.body;
+    const { direction, text, intent, status } = req.body;
     if (!direction || !text) {
       return res.status(400).json({ error: 'direction and text are required.' });
+    }
+    if (status && !['SENT', 'DELIVERED', 'FAILED', 'PENDING'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
     }
 
     const orgId = req.orgId;
@@ -711,7 +1040,7 @@ module.exports = function createConversationsRouter(prisma) {
 
     // Find or create conversation - route by threadId with buyer+vehicle fallback
     const threadId = req.params.id;
-    const { buyerName, vehicleId, listingTitle } = req.body;
+    const { buyerName, vehicleId, listingTitle, fbThreadUrl } = req.body;
 
     let conv = await prisma.conversation.findFirst({
       where: { threadId, orgId },
@@ -722,24 +1051,25 @@ module.exports = function createConversationsRouter(prisma) {
     // Fallback: match by buyer+vehicle when threadId drifts
     if (!conv && buyerName && direction === 'INBOUND') {
       const resolvedVid = vehicleId || await resolveVehicle(orgId, listingTitle);
-      const fallbackWhere = {
-        orgId,
-        buyerName: { equals: buyerName, mode: 'insensitive' },
-        archivedAt: null,
-      };
-      if (resolvedVid) fallbackWhere.vehicleId = resolvedVid;
-      const fallback = await prisma.conversation.findFirst({
-        where: fallbackWhere,
-        include: { vehicle: true },
-        orderBy: { lastMessageAt: 'desc' },
-      });
-      if (fallback) {
-        console.log(`[auto-reply] ThreadId drift: "${threadId}" matched existing conv ${fallback.id} by buyer+vehicle`);
-        conv = await prisma.conversation.update({
-          where: { id: fallback.id },
-          data: { threadId },
+      if (resolvedVid) {
+        const fallback = await prisma.conversation.findFirst({
+          where: {
+            orgId,
+            buyerName: { equals: buyerName, mode: 'insensitive' },
+            vehicleId: resolvedVid,
+            archivedAt: null,
+          },
           include: { vehicle: true },
+          orderBy: { lastMessageAt: 'desc' },
         });
+        if (fallback) {
+          console.log(`[auto-reply] ThreadId drift: "${threadId}" matched existing conv ${fallback.id} by buyer+vehicle`);
+          conv = await prisma.conversation.update({
+            where: { id: fallback.id },
+            data: { threadId },
+            include: { vehicle: true },
+          });
+        }
       }
     }
 
@@ -799,6 +1129,14 @@ module.exports = function createConversationsRouter(prisma) {
 
     if (!conv) return res.status(404).json({ error: 'Conversation not found.' });
 
+    if (fbThreadUrl && !conv.fbThreadUrl) {
+      conv = await prisma.conversation.update({
+        where: { id: conv.id },
+        data: { fbThreadUrl },
+        include: { vehicle: true },
+      });
+    }
+
     if (direction === 'INBOUND') {
       const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
       // Check against ALL messages (inbound AND outbound) — if the scraper
@@ -834,8 +1172,17 @@ module.exports = function createConversationsRouter(prisma) {
       }
     }
 
-    const message = await prisma.message.create({
-      data: { conversationId: conv.id, direction, text, intent },
+    const shouldDispatchOutbound = direction === 'OUTBOUND' && !status;
+    let message = await prisma.message.create({
+      data: {
+        conversationId: conv.id,
+        direction,
+        text,
+        intent,
+        ...(direction === 'OUTBOUND'
+          ? { status: status || 'PENDING', attempts: status && status !== 'PENDING' ? 1 : 0 }
+          : (status ? { status } : {})),
+      },
     });
 
     await prisma.conversation.update({
@@ -884,6 +1231,49 @@ module.exports = function createConversationsRouter(prisma) {
       }, BATCH_WINDOW_MS);
 
       autoReplyTimers.set(convId, timer);
+    }
+
+    if (shouldDispatchOutbound) {
+      const dispatcher = app.get('commandDispatcher');
+      const agentGateway = app.get('agentGateway');
+      const dispatchListingTitle = listingTitle || (
+        conv.vehicle
+          ? [conv.vehicle.year, conv.vehicle.make, conv.vehicle.model].filter(Boolean).join(' ')
+          : ''
+      );
+
+      if (dispatcher && agentGateway) {
+        const onlineAgents = agentGateway.getOnlineAgents(orgId);
+        if (onlineAgents.length > 0) {
+          try {
+            const dispatchResult = await dispatcher.dispatch(
+              orgId,
+              onlineAgents[0].id,
+              Commands.SEND_MESSAGE,
+              {
+                threadId: conv.threadId || conv.id,
+                fbThreadUrl: conv.fbThreadUrl || null,
+                text,
+                expectedBuyer: conv.buyerName,
+                listingTitle: dispatchListingTitle,
+                messageId: message.id,
+              }
+            );
+            message = await prisma.message.update({
+              where: { id: message.id },
+              data: {
+                status: didSendMessageFail(dispatchResult) ? 'FAILED' : 'SENT',
+                attempts: 1,
+              },
+            });
+          } catch (err) {
+            message = await prisma.message.update({
+              where: { id: message.id },
+              data: { status: 'PENDING', attempts: 0 },
+            });
+          }
+        }
+      }
     }
 
     res.status(201).json(message);

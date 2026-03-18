@@ -4,7 +4,7 @@ import PipelineBar from '../components/PipelineBar';
 import FilterTabs from '../components/FilterTabs';
 import LeadRow from '../components/LeadRow';
 import Badge from '../components/Badge';
-import { getStats, getLeads, getPipeline } from '../api/client';
+import { getStats, getLeads, getPipeline, archiveConversation } from '../api/client';
 import { useRealtime } from '../context/RealtimeContext';
 import {
   Users,
@@ -18,7 +18,8 @@ import {
   List,
   Zap,
   Clock,
-  Skull
+  Skull,
+  Trash2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
@@ -53,6 +54,20 @@ export default function SalesDashboard() {
       setLoading(false);
     }
   }, [filter]);
+
+  const handleArchive = async (e, lead) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (window.confirm(`Archive this conversation with ${lead.buyerName || 'this buyer'}?`)) {
+      try {
+        await archiveConversation(lead.id || lead.buyerId);
+        await refresh();
+      } catch (err) {
+        console.error('Failed to archive:', err);
+        alert('Failed to archive conversation');
+      }
+    }
+  };
 
   useEffect(() => {
     const ac = new AbortController();
@@ -227,7 +242,7 @@ export default function SalesDashboard() {
                     </motion.div>
                   ) : (
                     filteredLeads.map(lead => (
-                      <LeadRow key={lead.buyerId} lead={lead} />
+                      <LeadRow key={lead.buyerId} lead={lead} onRefresh={refresh} />
                     ))
                   )}
                 </AnimatePresence>
@@ -269,14 +284,24 @@ export default function SalesDashboard() {
                             initial={{ opacity: 0, scale: 0.95 }}
                             animate={{ opacity: 1, scale: 1 }}
                             onClick={() => navigate(`/leads/${lead.buyerId}`)}
-                            className="glass-card p-4 hover:border-brand-500/30 transition-all cursor-pointer group"
+                            className="glass-card p-4 hover:border-brand-500/30 transition-all cursor-pointer group relative"
                           >
                             <div className="flex items-start justify-between mb-3">
                               <div className="font-bold text-sm text-surface-100 group-hover:text-brand-400 transition-colors truncate">
                                 {lead.buyerName || 'Unknown'}
                               </div>
-                              <div className={`text-[10px] font-black italic ${column.color}`}>
-                                {lead.score || 0}%
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={(e) => handleArchive(e, lead)}
+                                  className="flex items-center gap-2 text-rose-500 border border-rose-500/30 hover:bg-rose-500/10 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-widest transition-colors"
+                                  title="Archive"
+                                >
+                                  <Trash2 size={12} />
+                                  <span>Delete</span>
+                                </button>
+                                <div className={`text-[10px] font-black italic ${column.color}`}>
+                                  {lead.score || 0}%
+                                </div>
                               </div>
                             </div>
                             <div className="flex items-center gap-2 mb-4">

@@ -32,24 +32,9 @@ export default function LeadDetail({ lead }) {
   const signals = score.signals || [];
   const isHot = (score.sentimentScore || 0) >= 70;
 
-  const financingKeywords = ["finance", "financing", "cash", "loan", "payment"];
-  const financingMsg = lead.messages?.find(m => 
-    m.role === 'buyer' && financingKeywords.some(kw => m.text.toLowerCase().includes(kw))
-  );
-  const financingPreference = financingMsg 
-    ? (financingMsg.text.toLowerCase().includes('cash') ? 'Cash' : 'Financing')
-    : 'Unknown';
-
-  let tradeInVehicle = "None mentioned";
-  if (lead.messages) {
-    const tradeIndex = lead.messages.findIndex(m => m.role === 'buyer' && m.text.toLowerCase().includes('trade'));
-    if (tradeIndex !== -1) {
-      const nextBuyerMsg = lead.messages.slice(tradeIndex + 1).find(m => m.role === 'buyer');
-      if (nextBuyerMsg) {
-        tradeInVehicle = nextBuyerMsg.text;
-      }
-    }
-  }
+  const financingPreference = lead.financingType || 'Unknown';
+  const tradeInVehicle = lead.tradeInDescription || 'None mentioned';
+  console.log('[LeadDetail] tradeInDescription:', lead.tradeInDescription, 'financingType:', lead.financingType);
 
   return (
     <div className="space-y-8 max-w-6xl mx-auto">

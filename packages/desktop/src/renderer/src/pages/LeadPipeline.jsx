@@ -3,7 +3,7 @@ import PipelineBar from '../components/PipelineBar';
 import FilterTabs from '../components/FilterTabs';
 import LeadRow from '../components/LeadRow';
 import Badge from '../components/Badge';
-import { getLeads, getPipeline, rescoreLeads } from '../api/client';
+import { getLeads, getPipeline, rescoreLeads, archiveConversation } from '../api/client';
 import { 
   GitBranch, 
   RefreshCw, 
@@ -15,7 +15,8 @@ import {
   Clock,
   Skull,
   Search,
-  Filter
+  Filter,
+  Trash2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -55,6 +56,20 @@ export default function LeadPipeline() {
       await refresh();
     } finally {
       setRescoring(false);
+    }
+  };
+
+  const handleArchive = async (e, lead) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (window.confirm(`Archive this conversation with ${lead.buyerName || 'this buyer'}?`)) {
+      try {
+        await archiveConversation(lead.id || lead.buyerId);
+        await refresh();
+      } catch (err) {
+        console.error('Failed to archive:', err);
+        alert('Failed to archive conversation');
+      }
     }
   };
 
@@ -167,14 +182,24 @@ export default function LeadPipeline() {
                          layout
                          initial={{ opacity: 0, scale: 0.95 }}
                          animate={{ opacity: 1, scale: 1 }}
-                         className="glass-card p-4 hover:border-brand-500/30 transition-all cursor-pointer group"
+                         className="glass-card p-4 hover:border-brand-500/30 transition-all cursor-pointer group relative"
                        >
                          <div className="flex items-start justify-between mb-3">
                            <div className="font-bold text-sm text-surface-100 group-hover:text-brand-400 transition-colors truncate">
                              {lead.buyerName || 'Unknown'}
                            </div>
-                           <div className={`text-[10px] font-black italic ${column.color}`}>
-                             {lead.score}%
+                           <div className="flex items-center gap-2">
+                             <button
+                               onClick={(e) => handleArchive(e, lead)}
+                               className="flex items-center gap-2 text-rose-500 border border-rose-500/30 hover:bg-rose-500/10 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-widest transition-colors"
+                               title="Archive conversation"
+                             >
+                               <Trash2 size={12} />
+                               <span>Delete</span>
+                             </button>
+                             <div className={`text-[10px] font-black italic ${column.color}`}>
+                               {lead.score}%
+                             </div>
                            </div>
                          </div>
                          <div className="flex items-center gap-2 mb-4">
@@ -226,7 +251,7 @@ export default function LeadPipeline() {
                   <p className="text-sm font-bold uppercase tracking-widest">The pipeline is empty</p>
                 </div>
               ) : (
-                leads.map(lead => <LeadRow key={lead.buyerId} lead={lead} />)
+                leads.map(lead => <LeadRow key={lead.buyerId} lead={lead} onRefresh={refresh} />)
               )}
            </div>
         </div>

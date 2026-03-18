@@ -1,13 +1,29 @@
 import { Link } from 'react-router-dom';
 import Badge from './Badge';
 import TimeAgo from './TimeAgo';
-import { ChevronRight, MessageSquare, TrendingUp, Calendar, User } from 'lucide-react';
+import { ChevronRight, MessageSquare, TrendingUp, Calendar, User, Trash2 } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { archiveConversation } from '../api/client';
 
-export default function LeadRow({ lead }) {
+export default function LeadRow({ lead, onRefresh }) {
   const score = lead.score || 0;
   const isHot = score >= 70;
   const isWarm = score >= 40 && score < 70;
+
+  const handleArchive = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    if (window.confirm(`Archive this conversation with ${lead.buyerName || 'this buyer'}?`)) {
+      try {
+        await archiveConversation(lead.id || lead.buyerId);
+        if (onRefresh) onRefresh();
+      } catch (err) {
+        console.error('Failed to archive:', err);
+        alert('Failed to archive conversation');
+      }
+    }
+  };
 
   return (
     <motion.div
@@ -74,10 +90,21 @@ export default function LeadRow({ lead }) {
            </div>
         </div>
 
-        <div className="flex-shrink-0 text-surface-700 group-hover:text-brand-500 transition-colors">
-          <ChevronRight size={20} />
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleArchive}
+            className="flex items-center gap-2 text-rose-500 border border-rose-500/30 hover:bg-rose-500/10 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-widest transition-colors"
+            title="Archive Conversation"
+          >
+            <Trash2 size={14} />
+            <span>Delete</span>
+          </button>
+          <div className="flex-shrink-0 text-surface-700 group-hover:text-brand-500 transition-colors">
+            <ChevronRight size={20} />
+          </div>
         </div>
       </Link>
     </motion.div>
   );
 }
+

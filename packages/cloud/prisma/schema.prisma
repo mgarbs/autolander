@@ -158,6 +158,7 @@ model Vehicle {
 model Conversation {
   id             String            @id @default(uuid())
   threadId       String?
+  fbThreadUrl    String?
   orgId          String
   agentId        String?
   vehicleId      String?
@@ -165,6 +166,8 @@ model Conversation {
   buyerId        String?
   buyerEmail     String?
   buyerPhone     String?
+  financingType  String?
+  tradeInDescription   String?
   state          ConversationState @default(NEW)
   leadScore      Int               @default(20)
   sentimentScore Float?

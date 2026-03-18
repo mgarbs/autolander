@@ -111,6 +111,8 @@ function toLeadFormat(conv) {
     buyerName: conv.buyerName,
     buyerEmail: conv.buyerEmail || null,
     buyerPhone: conv.buyerPhone || null,
+    financingType: conv.financingType || null,
+    tradeInDescription: conv.tradeInDescription || null,
     appointment: conv.appointment || null,
     createdAt: conv.createdAt,
     score,
@@ -202,6 +204,10 @@ export async function getLeads(params = {}, { signal } = {}) {
 export async function getLead(id, { signal } = {}) {
   const data = await fetchJSON(`/api/conversations/${encodeURIComponent(id)}`, { signal });
   return toLeadFormat(data);
+}
+
+export function archiveConversation(id) {
+  return fetchJSON(`/api/conversations/${id}/archive`, { method: 'PUT' });
 }
 
 export function getPipeline({ signal } = {}) {

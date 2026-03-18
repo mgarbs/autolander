@@ -44,6 +44,21 @@ class CommandRouter {
 
       const result = await adapter.execute(command, payload, { sendProgress });
 
+      if (
+        (command === Commands.SEND_MESSAGE || command === 'SEND_MESSAGE' || command === 'send_message')
+        && result
+        && result.sent === false
+      ) {
+        this.agentClient.send({
+          type: MessageTypes.COMMAND_RESULT,
+          commandId,
+          success: false,
+          error: result.error || 'Send failed',
+          data: result,
+        });
+        return;
+      }
+
       this.agentClient.send({
         type: MessageTypes.COMMAND_RESULT,
         commandId,

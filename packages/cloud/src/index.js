@@ -107,7 +107,7 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 // --- Pending message sweep (every 30 seconds) ---
-const { Commands, createCommand } = require('@autolander/shared/protocol');
+const { Commands } = require('@autolander/shared/protocol');
 
 setInterval(async () => {
   try {
@@ -120,7 +120,16 @@ setInterval(async () => {
         createdAt: { lt: new Date(Date.now() - 30000) },
       },
       include: {
-        conversation: { select: { id: true, threadId: true, orgId: true, buyerName: true } },
+        conversation: {
+          select: {
+            id: true,
+            threadId: true,
+            orgId: true,
+            buyerName: true,
+            fbThreadUrl: true,
+            vehicle: { select: { year: true, make: true, model: true } },
+          },
+        },
       },
       take: 10,
       orderBy: { createdAt: 'asc' },
@@ -133,26 +142,42 @@ setInterval(async () => {
       const onlineAgents = agentGateway.getOnlineAgents(conv.orgId);
       if (onlineAgents.length === 0) continue;
 
-      const command = createCommand(Commands.SEND_MESSAGE, {
-        threadId: conv.threadId || conv.id,
-        text: msg.text,
-        expectedBuyer: conv.buyerName,
-        messageId: msg.id,
-      });
+      const dispatchListingTitle = conv.vehicle
+        ? [conv.vehicle.year, conv.vehicle.make, conv.vehicle.model].filter(Boolean).join(' ')
+        : '';
 
-      const sent = agentGateway.sendToAgent(conv.orgId, onlineAgents[0].id, command);
-      if (sent) {
+      try {
+        const result = await commandDispatcher.dispatch(conv.orgId, onlineAgents[0].id, Commands.SEND_MESSAGE, {
+          threadId: conv.threadId || conv.id,
+          fbThreadUrl: conv.fbThreadUrl || null,
+          text: msg.text,
+          expectedBuyer: conv.buyerName,
+          listingTitle: dispatchListingTitle,
+          messageId: msg.id,
+        });
+
         await prisma.message.update({
           where: { id: msg.id },
-          data: { status: 'SENT', attempts: msg.attempts + 1 },
+          data: {
+            status: result && result.sent === false ? 'FAILED' : 'SENT',
+            attempts: msg.attempts + 1,
+          },
         });
-        console.log(`[sweep] Sent pending msg ${msg.id} for conv ${conv.id} (attempt ${msg.attempts + 1})`);
-      } else {
+        if (result && result.sent === false) {
+          console.warn(`[sweep] Agent reported send failure for msg ${msg.id} on conv ${conv.id}`);
+        } else {
+          console.log(`[sweep] Sent pending msg ${msg.id} for conv ${conv.id} (attempt ${msg.attempts + 1})`);
+        }
+      } catch (err) {
+        const nextAttempts = msg.attempts + 1;
         await prisma.message.update({
           where: { id: msg.id },
-          data: { attempts: msg.attempts + 1 },
+          data: {
+            attempts: nextAttempts,
+            status: nextAttempts >= 3 ? 'FAILED' : 'PENDING',
+          },
         });
-        console.log(`[sweep] Failed to dispatch msg ${msg.id}, attempt ${msg.attempts + 1}`);
+        console.log(`[sweep] Failed to dispatch msg ${msg.id}, attempt ${nextAttempts}: ${err.message}`);
       }
     }
 

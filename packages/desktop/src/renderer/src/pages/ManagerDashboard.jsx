@@ -156,7 +156,7 @@ export default function ManagerDashboard() {
                 </div>
               ) : (
                 leads.slice(0, 10).map(lead => (
-                  <LeadRow key={lead.buyerId} lead={lead} />
+                  <LeadRow key={lead.buyerId} lead={lead} onRefresh={refresh} />
                 ))
               )}
             </div>

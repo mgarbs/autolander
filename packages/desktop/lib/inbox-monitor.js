@@ -32,6 +32,9 @@ class InboxMonitor {
     this.sessionFile = path.join(SESSIONS_DIR, `${this.salespersonId}_fb_session.json`);
     this._consecutiveErrors = 0;
     this._usingMessenger = false; // true when fallen back to Messenger
+    this._graphqlThreads = [];
+    this._responseInterceptionSetup = false;
+    this._responseHandler = null;
   }
 
   /**
@@ -49,12 +52,564 @@ class InboxMonitor {
     this.browser = slot.browser;
 
     this.page = await SharedBrowser.getPage(this.salespersonId, 'inbox');
+    this._setupResponseInterception();
 
     // Load saved cookies as fallback for fresh profiles
     await this.loadSession();
 
     console.log('[inbox-monitor] Browser initialized (shared)');
     return this;
+  }
+
+  _setupResponseInterception() {
+    if (!this.page || this._responseInterceptionSetup) return;
+
+    this._responseHandler = async (response) => {
+      try {
+        const url = response.url();
+        if (response.status() !== 200) return;
+        if (!/graphql|\/api\/graphql\//i.test(url)) return;
+
+        const body = await response.text();
+        if (!body || body.length < 2) return;
+
+        const payloads = this._parseJsonPayloads(body);
+        for (const payload of payloads) {
+          this._collectGraphqlThreads(payload);
+        }
+      } catch {
+        // Best-effort only. DOM parsing remains the fallback path.
+      }
+    };
+
+    this.page.on('response', this._responseHandler);
+    this._responseInterceptionSetup = true;
+  }
+
+  _parseJsonPayloads(rawText) {
+    const cleaned = (rawText || '')
+      .replace(/^\s*for\s*\(;;\);\s*/, '')
+      .replace(/^\s*while\s*\(1\);\s*/, '')
+      .trim();
+
+    if (!cleaned) return [];
+
+    const direct = this._tryParseJson(cleaned);
+    if (typeof direct !== 'undefined') {
+      return [direct];
+    }
+
+    const payloads = [];
+    let start = -1;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    for (let i = 0; i < cleaned.length; i += 1) {
+      const char = cleaned[i];
+
+      if (start === -1) {
+        if (char === '{' || char === '[') {
+          start = i;
+          depth = 1;
+          inString = false;
+          escape = false;
+        }
+        continue;
+      }
+
+      if (inString) {
+        if (escape) {
+          escape = false;
+        } else if (char === '\\') {
+          escape = true;
+        } else if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+
+      if (char === '{' || char === '[') depth += 1;
+      if (char === '}' || char === ']') depth -= 1;
+
+      if (depth === 0) {
+        const parsed = this._tryParseJson(cleaned.slice(start, i + 1));
+        if (typeof parsed !== 'undefined') {
+          payloads.push(parsed);
+        }
+        start = -1;
+      }
+    }
+
+    return payloads;
+  }
+
+  _tryParseJson(text) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  }
+
+  _collectGraphqlThreads(payload) {
+    const inspect = (candidate) => {
+      const thread = this._extractGraphqlThread(candidate);
+      if (thread) {
+        this._upsertGraphqlThread(thread);
+      }
+    };
+
+    inspect(payload);
+
+    this._walkJson(payload, (_key, value) => {
+      inspect(value);
+
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          inspect(item);
+          if (item && typeof item === 'object' && item.node) {
+            inspect(item.node);
+          }
+        }
+      } else if (value && typeof value === 'object' && value.node) {
+        inspect(value.node);
+      }
+    });
+  }
+
+  _upsertGraphqlThread(thread) {
+    const threadId = this._buildSyntheticThreadId(
+      thread.buyerName,
+      thread.listingTitle,
+      thread.realThreadId
+    );
+    const next = {
+      threadId,
+      buyerName: thread.buyerName || 'Unknown',
+      listingTitle: thread.listingTitle || '',
+      lastMessage: thread.lastMessage || '',
+      unread: typeof thread.unread === 'boolean' ? thread.unread : true,
+      timestamp: thread.timestamp || '',
+      realThreadId: thread.realThreadId || '',
+      _realFbId: thread.realThreadId || '',
+    };
+
+    const idx = this._graphqlThreads.findIndex((existing) => {
+      if (next.realThreadId && existing.realThreadId) {
+        return existing.realThreadId === next.realThreadId;
+      }
+      return existing.threadId === next.threadId;
+    });
+
+    if (idx === -1) {
+      this._graphqlThreads.push(next);
+      return;
+    }
+
+    const existing = this._graphqlThreads[idx];
+    this._graphqlThreads[idx] = {
+      ...existing,
+      ...next,
+      buyerName: next.buyerName || existing.buyerName,
+      listingTitle: next.listingTitle || existing.listingTitle,
+      lastMessage: next.lastMessage || existing.lastMessage,
+      timestamp: next.timestamp || existing.timestamp,
+      unread: typeof next.unread === 'boolean' ? next.unread : existing.unread,
+    };
+  }
+
+  _extractGraphqlThread(candidate) {
+    const obj = this._unwrapGraphqlThreadCandidate(candidate);
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+    if (!this._looksLikeGraphqlThread(obj)) return null;
+
+    const realThreadId = this._extractThreadNumericId(obj.thread_key)
+      || this._extractThreadNumericId(obj.thread_id)
+      || this._extractThreadNumericId(obj.threadId)
+      || this._extractThreadNumericId(obj.id)
+      || this._extractThreadNumericId(obj.thread_fbid);
+    const buyerName = this._extractGraphqlBuyerName(obj);
+    const listingTitle = this._extractGraphqlListingTitle(obj);
+    const lastMessage = this._extractGraphqlLastMessage(obj);
+    const unread = this._extractGraphqlUnread(obj);
+    const timestamp = this._extractGraphqlTimestamp(obj);
+
+    if (!realThreadId && !buyerName && !lastMessage) return null;
+
+    return {
+      realThreadId: realThreadId || '',
+      buyerName: buyerName || 'Unknown',
+      listingTitle: listingTitle || '',
+      lastMessage: lastMessage || '',
+      unread,
+      timestamp: timestamp || '',
+    };
+  }
+
+  _unwrapGraphqlThreadCandidate(candidate, depth = 0) {
+    if (depth > 3 || !candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      return candidate;
+    }
+
+    if (candidate.node && typeof candidate.node === 'object') {
+      return this._unwrapGraphqlThreadCandidate(candidate.node, depth + 1);
+    }
+    if (candidate.thread && typeof candidate.thread === 'object') {
+      return this._unwrapGraphqlThreadCandidate(candidate.thread, depth + 1);
+    }
+    if (candidate.conversation && typeof candidate.conversation === 'object') {
+      return this._unwrapGraphqlThreadCandidate(candidate.conversation, depth + 1);
+    }
+
+    return candidate;
+  }
+
+  _looksLikeGraphqlThread(obj) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+
+    const keys = Object.keys(obj).map(key => key.toLowerCase());
+    let signals = 0;
+
+    if (
+      keys.includes('thread_key')
+      || keys.includes('thread_id')
+      || keys.includes('threadid')
+      || keys.includes('thread_fbid')
+      || this._extractThreadNumericId(obj.thread_key)
+      || this._extractThreadNumericId(obj.thread_id)
+      || this._extractThreadNumericId(obj.threadId)
+    ) {
+      signals += 1;
+    }
+    if (keys.some(key => key.includes('participant') || key === 'participants')) signals += 1;
+    if (keys.some(key => key.includes('message') || key === 'snippet')) signals += 1;
+    if (keys.some(key => key.includes('commerce') || key.includes('marketplace') || key === 'listing')) signals += 1;
+    if (keys.some(key => key.includes('unread') || key.includes('read_receipt'))) signals += 1;
+
+    return signals >= 2;
+  }
+
+  _extractGraphqlBuyerName(obj) {
+    const participantFields = [
+      'other_participants',
+      'participants',
+      'all_participants',
+      'thread_participants',
+      'participant_list',
+      'actors',
+      'users',
+    ];
+    let fallback = '';
+
+    for (const field of participantFields) {
+      const participants = this._flattenCollection(obj[field]);
+      for (const participant of participants) {
+        const candidate = participant?.messaging_actor || participant?.actor || participant?.user || participant?.participant || participant;
+        const name = this._extractFieldString(candidate, ['name', 'short_name', 'full_name', 'display_name']);
+        if (!name) continue;
+        if (!fallback) fallback = name;
+
+        const isSelf = Boolean(
+          participant?.is_self
+          || participant?.is_viewer
+          || candidate?.is_self
+          || candidate?.is_viewer
+          || participant?.is_own_profile
+          || candidate?.is_own_profile
+        );
+        if (!isSelf) {
+          return name;
+        }
+      }
+    }
+
+    return fallback;
+  }
+
+  _extractGraphqlListingTitle(obj) {
+    const directFields = [
+      obj.listing_title,
+      obj.marketplace_listing_title,
+      obj.commerce_product_title,
+    ];
+
+    for (const value of directFields) {
+      const text = this._extractString(value);
+      if (text && text.length < 160 && !/^\$[\d,]+/.test(text)) {
+        return text;
+      }
+    }
+
+    const containers = [
+      obj.marketplace_listing,
+      obj.listing,
+      obj.commerce_product,
+      obj.marketplace_thread_data,
+      obj.commerce_thread,
+      obj.extensible_attachment,
+    ];
+
+    for (const container of containers) {
+      const text = this._extractFieldString(container, [
+        'title',
+        'name',
+        'listing_title',
+        'marketplace_listing_title',
+        'text',
+      ]);
+      if (text && text.length < 160 && !/^\$[\d,]+/.test(text)) {
+        return text;
+      }
+    }
+
+    return '';
+  }
+
+  _extractGraphqlLastMessage(obj) {
+    const direct = [
+      this._extractString(obj.snippet),
+      this._extractFieldString(obj.last_message, ['text', 'snippet', 'message', 'body']),
+      this._extractFieldString(obj.last_sent_message, ['text', 'snippet', 'message', 'body']),
+      this._extractFieldString(obj.messages, ['text', 'snippet', 'message', 'body']),
+    ];
+
+    for (const candidate of direct) {
+      if (candidate) return candidate;
+    }
+
+    const messageCollections = [
+      obj.last_message,
+      obj.last_sent_message,
+      obj.messages,
+    ];
+
+    for (const value of messageCollections) {
+      const items = this._flattenCollection(value);
+      for (const item of items) {
+        const text = this._extractFieldString(item, ['text', 'snippet', 'message', 'body']);
+        if (text) return text;
+      }
+    }
+
+    return '';
+  }
+
+  _extractGraphqlUnread(obj) {
+    if (typeof obj.unread === 'boolean') return obj.unread;
+    if (typeof obj.is_unread === 'boolean') return obj.is_unread;
+
+    const unreadCount = this._extractNumber(obj.unread_count);
+    if (typeof unreadCount === 'number') {
+      return unreadCount > 0;
+    }
+
+    const lastMessageTs = this._extractNumber(obj.updated_time_precise)
+      || this._extractNumber(obj.last_message_timestamp)
+      || this._extractNumber(obj.timestamp);
+    const lastReadTs = this._extractNumber(obj.last_read_timestamp)
+      || this._extractNumber(obj.viewer_last_read_timestamp);
+
+    if (lastMessageTs && lastReadTs) {
+      return lastMessageTs > lastReadTs;
+    }
+
+    return true;
+  }
+
+  _extractGraphqlTimestamp(obj) {
+    const candidates = [
+      obj.updated_time_precise,
+      obj.updated_time,
+      obj.last_message_timestamp,
+      obj.last_activity_timestamp,
+      obj.timestamp,
+    ];
+
+    for (const candidate of candidates) {
+      const numeric = this._extractNumber(candidate);
+      if (typeof numeric === 'number') return String(numeric);
+
+      const text = this._extractString(candidate);
+      if (text) return text;
+    }
+
+    return '';
+  }
+
+  _extractThreadNumericId(value, depth = 0) {
+    if (depth > 6 || value == null) return '';
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return String(Math.trunc(value));
+    }
+
+    if (typeof value === 'string') {
+      const match = value.match(/\d{6,}/);
+      return match ? match[0] : '';
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const id = this._extractThreadNumericId(item, depth + 1);
+        if (id) return id;
+      }
+      return '';
+    }
+
+    if (typeof value !== 'object') return '';
+
+    for (const key of ['thread_fbid', 'thread_id', 'threadId', 'id', 'other_user_id', 'value']) {
+      const id = this._extractThreadNumericId(value[key], depth + 1);
+      if (id) return id;
+    }
+
+    for (const nested of Object.values(value)) {
+      const id = this._extractThreadNumericId(nested, depth + 1);
+      if (id) return id;
+    }
+
+    return '';
+  }
+
+  _flattenCollection(value, depth = 0) {
+    if (depth > 6 || value == null) return [];
+
+    if (Array.isArray(value)) {
+      return value.flatMap(item => this._flattenCollection(item, depth + 1));
+    }
+
+    if (typeof value !== 'object') return [];
+
+    if (Array.isArray(value.nodes)) {
+      return this._flattenCollection(value.nodes, depth + 1);
+    }
+
+    if (Array.isArray(value.edges)) {
+      return value.edges.flatMap(edge => this._flattenCollection(edge?.node || edge, depth + 1));
+    }
+
+    if (value.node && typeof value.node === 'object') {
+      return this._flattenCollection(value.node, depth + 1);
+    }
+
+    return [value];
+  }
+
+  _extractFieldString(obj, fields) {
+    if (!obj || typeof obj !== 'object') return '';
+
+    for (const field of fields) {
+      const text = this._extractString(obj[field]);
+      if (text) return text;
+    }
+
+    return '';
+  }
+
+  _extractString(value, depth = 0) {
+    if (depth > 6 || value == null) return '';
+
+    if (typeof value === 'string') {
+      return value.trim();
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const text = this._extractString(item, depth + 1);
+        if (text) return text;
+      }
+      return '';
+    }
+
+    if (typeof value !== 'object') return '';
+
+    const preferredKeys = [
+      'text',
+      'snippet',
+      'message',
+      'body',
+      'title',
+      'name',
+      'short_name',
+      'full_name',
+      'display_name',
+    ];
+
+    for (const key of preferredKeys) {
+      const text = this._extractString(value[key], depth + 1);
+      if (text) return text;
+    }
+
+    return '';
+  }
+
+  _extractNumber(value, depth = 0) {
+    if (depth > 6 || value == null) return null;
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const match = value.match(/\d+/);
+      return match ? Number(match[0]) : null;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const num = this._extractNumber(item, depth + 1);
+        if (typeof num === 'number') return num;
+      }
+      return null;
+    }
+
+    if (typeof value !== 'object') return null;
+
+    for (const key of ['count', 'value', 'timestamp', 'time', 'time_in_seconds']) {
+      const num = this._extractNumber(value[key], depth + 1);
+      if (typeof num === 'number') return num;
+    }
+
+    return null;
+  }
+
+  _buildSyntheticThreadId(buyerName, listingTitle, fallbackSuffix = '') {
+    const buyerSlug = this._slugify(buyerName) || 'unknown';
+    const listingSlug = listingTitle ? this._slugify(listingTitle).substring(0, 50) : '';
+    const suffix = listingSlug || (fallbackSuffix ? String(fallbackSuffix) : '');
+    return suffix ? `inbox_${buyerSlug}_${suffix}` : `inbox_${buyerSlug}`;
+  }
+
+  _slugify(text) {
+    return (text || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+  }
+
+  _normalizeText(text) {
+    return (text || '')
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  _walkJson(obj, callback, depth = 0) {
+    if (depth > 15 || !obj || typeof obj !== 'object') return;
+    for (const [key, value] of Object.entries(obj)) {
+      callback(key, value);
+      if (typeof value === 'object' && value !== null) {
+        this._walkJson(value, callback, depth + 1);
+      }
+    }
   }
 
   /**
@@ -159,6 +714,8 @@ class InboxMonitor {
    * Clicking a row opens the chat panel on the right side.
    */
   async navigateToInbox() {
+    this._graphqlThreads = [];
+
     if (this._consecutiveErrors > 0) {
       this._consecutiveErrors += 1;
       if (this._consecutiveErrors % 10 !== 0) {
@@ -186,7 +743,7 @@ class InboxMonitor {
 
     await this.page.goto('https://www.facebook.com/marketplace/inbox/', {
       waitUntil: 'networkidle2',
-      timeout: 30000
+      timeout: 60000
     });
 
     await humanDelay(2000, 4000);
@@ -284,7 +841,7 @@ class InboxMonitor {
 
     await this.page.goto('https://www.facebook.com/messages/t/', {
       waitUntil: 'networkidle2',
-      timeout: 30000,
+      timeout: 60000,
     });
     await humanDelay(3000, 5000);
     await this.dismissOverlays();
@@ -576,6 +1133,36 @@ class InboxMonitor {
       return this._getMessengerThreads();
     }
 
+    {
+      if (this._graphqlThreads.length > 0) {
+        const threads = this._graphqlThreads.map((thread, index) => {
+          const buyerName = (thread.buyerName || '').trim() || 'Unknown';
+          const unknownBuyer = !thread.buyerName || /^unknown$/i.test((thread.buyerName || '').trim());
+
+          return {
+            threadId: thread.threadId || this._buildSyntheticThreadId(buyerName, thread.listingTitle, thread.realThreadId),
+            buyerName,
+            listingTitle: thread.listingTitle || '',
+            lastMessage: thread.lastMessage || '',
+            unread: typeof thread.unread === 'boolean' ? thread.unread : true,
+            timestamp: thread.timestamp || '',
+            _realFbId: thread.realThreadId || thread._realFbId || '',
+            _index: index,
+            _unknownBuyer: unknownBuyer,
+          };
+        });
+
+        console.log(`[inbox-monitor] Found ${threads.length} conversation(s) from GraphQL`);
+        return threads;
+      }
+
+      const threads = await this._getMarketplaceThreadsFromDom();
+      const withUnread = threads.map(t => ({ ...t, unread: true }));
+
+      console.log(`[inbox-monitor] Found ${withUnread.length} conversation(s)`);
+      return withUnread;
+    }
+
     const threads = await this.page.evaluate(() => {
       const results = [];
       const seen = new Set();
@@ -762,6 +1349,264 @@ class InboxMonitor {
   }
 
   /**
+   * Get only threads for ACTIVE listings (ones with a listing photo).
+   * Active listing rows have an <img> element (the listing photo).
+   * Old/inactive rows have an SVG chat icon instead -- no <img>.
+   */
+  async getActiveListingThreads() {
+    console.log('[inbox-monitor] Scanning for ACTIVE listing threads only...');
+    await humanDelay(1000, 2000);
+
+    if (this._usingMessenger) {
+      return this._getMessengerThreads();
+    }
+
+    const rows = await this.page.evaluate(() => {
+      const results = [];
+      const seen = new Set();
+      const DOT_CHARS = ['\u00B7', '\u2022', '\u2027', '\u22C5'];
+
+      for (const btn of document.querySelectorAll('div[role="button"]')) {
+        if (btn.offsetParent === null) continue;
+        const rect = btn.getBoundingClientRect();
+        if (rect.x < 250 || rect.y < 80 || rect.width < 150 || rect.height < 40) continue;
+
+        const fullText = btn.textContent?.trim() || '';
+        if (!fullText || fullText.length < 5) continue;
+        if (/\$[\d,]+/.test(fullText)) continue;
+
+        const dot = DOT_CHARS.find(d => fullText.includes(d));
+        if (!dot) continue;
+
+        const key = fullText.substring(0, 80);
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        const parts = fullText.split(dot).map(s => s.trim());
+        const buyerName = parts[0] || 'Unknown';
+        const afterDot = parts.slice(1).join(' ').trim();
+
+        const spans = btn.querySelectorAll('span');
+        let listingTitle = '';
+        for (const span of spans) {
+          const text = span.textContent?.trim();
+          if (!text || text === buyerName) continue;
+          if (/^\d{4}\s+\w/.test(text) && text.length < 60 && text.length > 6) {
+            listingTitle = text;
+            break;
+          }
+        }
+        if (!listingTitle) listingTitle = afterDot;
+
+        // Clean listing title: FB concatenates title with preview text without spaces
+        // e.g. "2018 Ford FiestaClay Newsome sent you..." or "2019 Toyota CorollaYou left"
+        // Split at camelCase boundaries then take first 3 words (Year Make Model)
+        if (listingTitle) {
+          const spaced = listingTitle
+            .replace(/([a-z])([A-Z])/g, '$1 $2')   // "FiestaClay" → "Fiesta Clay"
+            .replace(/(\d)([A-Z])/g, '$1 $2');      // "30Clay" → "30 Clay"
+          const words = spaced.split(/\s+/);
+          if (words.length >= 3 && /^\d{4}$/.test(words[0])) {
+            // Take Year Make Model, strip junk from model: "Fiesta?9:08" → "Fiesta"
+            const model = words[2].replace(/[^a-zA-Z0-9-].*$/, '');
+            listingTitle = words[0] + ' ' + words[1] + ' ' + model;
+          }
+        }
+
+        // Detect unread: FB bolds the text for threads with new messages
+        const hasUnread = btn.querySelector('strong') !== null
+          || Array.from(btn.querySelectorAll('span')).some(span => {
+            const fw = window.getComputedStyle(span).fontWeight;
+            return parseInt(fw) >= 600 || fw === 'bold';
+          });
+
+        const boldCount = Array.from(btn.querySelectorAll('span')).filter(span => {
+          const fw = window.getComputedStyle(span).fontWeight;
+          return parseInt(fw) >= 600 || fw === 'bold';
+        }).length;
+
+        results.push({
+          buyerName,
+          listingTitle,
+          unread: hasUnread,
+          boldCount,
+          _index: results.length,
+        });
+      }
+
+      return results;
+    });
+
+    const threads = rows.map((row, index) => ({
+      threadId: this._buildSyntheticThreadId(row.buyerName, row.listingTitle),
+      buyerName: row.buyerName || 'Unknown',
+      listingTitle: row.listingTitle || '',
+      lastMessage: '',
+      unread: row.unread,
+      timestamp: '',
+      _index: typeof row._index === 'number' ? row._index : index,
+    }));
+
+    for (const thread of threads) {
+      const gqlMatch = this._graphqlThreads.find(g => {
+        const normGql = this._normalizeText(g.buyerName);
+        const normThread = this._normalizeText(thread.buyerName);
+        return normGql === normThread || normGql.startsWith(normThread) || normThread.startsWith(normGql);
+      });
+      if (gqlMatch && gqlMatch.realThreadId) {
+        thread._realFbId = gqlMatch.realThreadId;
+        thread._realFbUrl = `https://www.facebook.com/marketplace/inbox/?thread_id=${gqlMatch.realThreadId}`;
+      }
+    }
+
+    console.log(`[inbox-monitor] Found ${threads.length} ACTIVE listing thread(s)`);
+    for (const thread of threads) {
+      console.log(`[inbox-monitor]   ${thread.buyerName} -- ${thread.listingTitle} [bold:${thread.boldCount || 0} unread:${thread.unread}]`);
+    }
+    return threads;
+  }
+
+  async _getMarketplaceThreadsFromDom() {
+    const rows = await this.page.evaluate(() => {
+      const results = [];
+      const seen = new Set();
+      const DOT_CHARS = ['\u00B7', '\u2022', '\u2027', '\u22C5'];
+      const TIMESTAMP_PATTERNS = [
+        /^\d{1,2}:\d{2}$/,
+        /^\d{1,2}:\d{2}\s*(AM|PM)$/i,
+        /^\d{1,2}:\d{2}\s*(AM|PM)/i,
+        /^\d+[smhdw]$/i,
+        /^(today|yesterday)$/i,
+        /^(today|yesterday)\s+at\s+/i,
+        /^(mon|tue|wed|thu|fri|sat|sun)$/i,
+        /^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i,
+        /^\d{1,2}\/\d{1,2}(?:\/\d{2,4})?$/,
+      ];
+
+      const normalize = (text) => (text || '')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+      const isTimestamp = (text) => TIMESTAMP_PATTERNS.some((pattern) => pattern.test((text || '').trim()));
+      const findDot = (text) => DOT_CHARS.find(dot => (text || '').includes(dot)) || null;
+
+      function collectSegments(button) {
+        const collected = [];
+        const nodes = button.querySelectorAll('span, strong, a, div[dir="auto"]');
+
+        for (const node of nodes) {
+          if (node.offsetParent === null) continue;
+          const text = node.textContent?.trim();
+          if (!text || text.length > 180) continue;
+          const rect = node.getBoundingClientRect();
+          if (rect.width < 6 || rect.height < 6) continue;
+          collected.push({ text, y: rect.y, x: rect.x });
+        }
+
+        const lines = (button.innerText || '')
+          .split('\n')
+          .map(line => line.trim())
+          .filter(Boolean)
+          .map((text, idx) => ({ text, y: 1000 + idx, x: idx }));
+
+        const ordered = collected.concat(lines).sort((a, b) => a.y - b.y || a.x - b.x);
+        const unique = [];
+        const uniqueKeys = new Set();
+
+        for (const item of ordered) {
+          const key = normalize(item.text);
+          if (!key || uniqueKeys.has(key)) continue;
+          uniqueKeys.add(key);
+          unique.push(item.text);
+        }
+
+        return unique;
+      }
+
+      function parseRow(button) {
+        const rect = button.getBoundingClientRect();
+        if (rect.x <= 250 || rect.y <= 80 || rect.width <= 150 || rect.height <= 40) return null;
+
+        const fullText = button.textContent?.trim() || '';
+        if (!fullText || fullText.length < 5) return null;
+        if (/\$[\d,]+/.test(fullText)) return null;
+
+        const segments = collectSegments(button);
+        if (segments.length < 2) return null;
+
+        const timestamp = segments.find(isTimestamp) || '';
+        if (!timestamp) return null;
+
+        const contentSegments = segments.filter(text => !isTimestamp(text));
+        if (contentSegments.length < 2) return null;
+
+        const headerSegment = contentSegments.find(text => findDot(text))
+          || (findDot(fullText) ? (button.innerText || fullText).split('\n')[0].trim() : '');
+        let buyerName = contentSegments[0];
+        let listingTitle = '';
+
+        if (headerSegment) {
+          const dot = findDot(headerSegment);
+          const parts = dot
+            ? headerSegment.split(dot).map(part => part.trim()).filter(Boolean)
+            : [];
+          if (parts.length >= 2) {
+            buyerName = parts[0];
+            listingTitle = parts.slice(1).join(' ').trim();
+          }
+        }
+
+        const lastMessage = contentSegments.find(text => {
+          if (text === buyerName) return false;
+          if (text === listingTitle) return false;
+          if (text === headerSegment) return false;
+          return true;
+        }) || contentSegments[1] || '';
+
+        if (!buyerName || !lastMessage) return null;
+
+        return {
+          buyerName,
+          listingTitle,
+          lastMessage,
+          timestamp,
+        };
+      }
+
+      for (const button of document.querySelectorAll('div[role="button"], a[role="link"], a[href*="marketplace"], div[role="row"], div[role="listitem"]')) {
+        if (button.offsetParent === null) continue;
+
+        const parsed = parseRow(button);
+        if (!parsed) continue;
+
+        const key = normalize(`${parsed.buyerName}|${parsed.listingTitle}|${parsed.lastMessage}|${parsed.timestamp}`);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+
+        results.push({
+          buyerName: parsed.buyerName,
+          listingTitle: parsed.listingTitle,
+          lastMessage: parsed.lastMessage,
+          timestamp: parsed.timestamp,
+          _index: results.length,
+        });
+      }
+
+      return results;
+    });
+
+    return rows.map((row, index) => ({
+      threadId: this._buildSyntheticThreadId(row.buyerName, row.listingTitle),
+      buyerName: row.buyerName || 'Unknown',
+      listingTitle: row.listingTitle || '',
+      lastMessage: row.lastMessage || '',
+      unread: true,
+      timestamp: row.timestamp || '',
+      _index: typeof row._index === 'number' ? row._index : index,
+    }));
+  }
+
+  /**
    * Extract Marketplace conversation threads from Facebook Messenger.
    *
    * After clicking the "Marketplace" entry in Messenger sidebar, the right
@@ -870,6 +1715,312 @@ class InboxMonitor {
     return results;
   }
 
+  async _clickMarketplaceThreadRow(thread) {
+    return this.page.evaluate((target) => {
+      const DOT_CHARS = ['\u00B7', '\u2022', '\u2027', '\u22C5'];
+      const TIMESTAMP_PATTERNS = [
+        /^\d{1,2}:\d{2}$/,
+        /^\d{1,2}:\d{2}\s*(AM|PM)$/i,
+        /^\d{1,2}:\d{2}\s*(AM|PM)/i,
+        /^\d+[smhdw]$/i,
+        /^(today|yesterday)$/i,
+        /^(today|yesterday)\s+at\s+/i,
+        /^(mon|tue|wed|thu|fri|sat|sun)$/i,
+        /^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i,
+        /^\d{1,2}\/\d{1,2}(?:\/\d{2,4})?$/,
+      ];
+
+      const normalize = (text) => (text || '')
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+      const isTimestamp = (text) => TIMESTAMP_PATTERNS.some((pattern) => pattern.test((text || '').trim()));
+      const findDot = (text) => DOT_CHARS.find(dot => (text || '').includes(dot)) || null;
+
+      function collectSegments(button) {
+        const collected = [];
+        const nodes = button.querySelectorAll('span, strong, a, div[dir="auto"]');
+
+        for (const node of nodes) {
+          if (node.offsetParent === null) continue;
+          const text = node.textContent?.trim();
+          if (!text || text.length > 180) continue;
+          const rect = node.getBoundingClientRect();
+          if (rect.width < 6 || rect.height < 6) continue;
+          collected.push({ text, y: rect.y, x: rect.x });
+        }
+
+        const lines = (button.innerText || '')
+          .split('\n')
+          .map(line => line.trim())
+          .filter(Boolean)
+          .map((text, idx) => ({ text, y: 1000 + idx, x: idx }));
+
+        const ordered = collected.concat(lines).sort((a, b) => a.y - b.y || a.x - b.x);
+        const unique = [];
+        const uniqueKeys = new Set();
+
+        for (const item of ordered) {
+          const key = normalize(item.text);
+          if (!key || uniqueKeys.has(key)) continue;
+          uniqueKeys.add(key);
+          unique.push(item.text);
+        }
+
+        return unique;
+      }
+
+      function parseRow(button) {
+        const rect = button.getBoundingClientRect();
+        if (rect.x <= 250 || rect.y <= 80 || rect.width <= 150 || rect.height <= 40) return null;
+
+        const fullText = button.textContent?.trim() || '';
+        if (!fullText || fullText.length < 5) return null;
+        if (/\$[\d,]+/.test(fullText)) return null;
+
+        const segments = collectSegments(button);
+        if (segments.length < 2) return null;
+
+        const timestamp = segments.find(isTimestamp) || '';
+        if (!timestamp) return null;
+
+        const contentSegments = segments.filter(text => !isTimestamp(text));
+        if (contentSegments.length < 2) return null;
+
+        const headerSegment = contentSegments.find(text => findDot(text))
+          || (findDot(fullText) ? (button.innerText || fullText).split('\n')[0].trim() : '');
+        let buyerName = contentSegments[0];
+        let listingTitle = '';
+
+        if (headerSegment) {
+          const dot = findDot(headerSegment);
+          const parts = dot
+            ? headerSegment.split(dot).map(part => part.trim()).filter(Boolean)
+            : [];
+          if (parts.length >= 2) {
+            buyerName = parts[0];
+            listingTitle = parts.slice(1).join(' ').trim();
+          }
+        }
+
+        const lastMessage = contentSegments.find(text => {
+          if (text === buyerName) return false;
+          if (text === listingTitle) return false;
+          if (text === headerSegment) return false;
+          return true;
+        }) || contentSegments[1] || '';
+
+        if (!buyerName || !lastMessage) return null;
+
+        return {
+          buyerName,
+          listingTitle,
+          lastMessage,
+          fullText,
+          hasDotSeparator: Boolean(findDot(headerSegment) || findDot(fullText)),
+        };
+      }
+
+      const wantedListing = normalize(target.listingTitle).substring(0, 40);
+      const wantedMessage = normalize(target.lastMessage).substring(0, 40);
+      const unknownBuyer = Boolean(target._unknownBuyer) || normalize(target.buyerName) === 'unknown';
+      const matchByListingOnly = Boolean(unknownBuyer && wantedListing);
+
+      let best = null;
+      for (const button of document.querySelectorAll('div[role="button"], a[role="link"], a[href*="marketplace"], div[role="row"], div[role="listitem"]')) {
+        if (button.offsetParent === null) continue;
+
+        const parsed = parseRow(button);
+        if (!parsed) continue;
+        const normFullText = normalize(parsed.fullText);
+
+        if (matchByListingOnly) {
+          if (!normFullText.includes(wantedListing)) continue;
+        } else {
+          // Flexible name match: GraphQL gives full names ("Romeo Lassiter")
+          // but DOM may show just first name ("Romeo"). Match if either starts with the other.
+          const normParsed = normalize(parsed.buyerName);
+          const normTarget = normalize(target.buyerName);
+          if (!normParsed.startsWith(normTarget) && !normTarget.startsWith(normParsed) && !normParsed.includes(normTarget) && !normTarget.includes(normParsed)) continue;
+        }
+
+        let score = 100;
+
+        if (wantedListing) {
+          const listingMatch = normalize(parsed.listingTitle).includes(wantedListing) || normFullText.includes(wantedListing);
+          if (listingMatch) {
+            score += 200;
+          } else if (!parsed.hasDotSeparator) {
+            score -= 50;
+          }
+        }
+
+        if (wantedMessage && normalize(parsed.lastMessage).includes(wantedMessage)) {
+          score += 15;
+        }
+
+        if (parsed.listingTitle) score += 2;
+
+        if (!best || score > best.score) {
+          best = {
+            score,
+            label: parsed.fullText.substring(0, 80),
+            button,
+          };
+        }
+      }
+
+      if (!best) return null;
+
+      best.button.click();
+      return best.label;
+    }, {
+      buyerName: thread.buyerName || '',
+      listingTitle: thread.listingTitle || '',
+      lastMessage: thread.lastMessage || '',
+      _unknownBuyer: Boolean(thread._unknownBuyer),
+    });
+  }
+
+  /**
+   * Click an active listing row by matching listing title + buyer name.
+   * Only targets div[role="button"] elements with <img> inside (active listings).
+   */
+  async _clickActiveListingRow(thread) {
+    return this.page.evaluate((target) => {
+      const normalize = (text) => (text || '')
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      const wantedBuyer = normalize(target.buyerName);
+      const wantedListing = normalize(target.listingTitle);
+
+      for (const btn of document.querySelectorAll('div[role="button"]')) {
+        if (btn.offsetParent === null) continue;
+        const rect = btn.getBoundingClientRect();
+        if (rect.x < 250 || rect.y < 80 || rect.width < 150 || rect.height < 40) continue;
+
+        const fullText = btn.textContent?.trim() || '';
+        const normFull = normalize(fullText);
+
+        if (wantedListing && normFull.includes(wantedListing.substring(0, 20))) {
+          btn.click();
+          return fullText.substring(0, 80);
+        }
+
+        if (wantedBuyer && normFull.includes(wantedBuyer)) {
+          btn.click();
+          return fullText.substring(0, 80);
+        }
+      }
+
+      return null;
+    }, {
+      buyerName: thread.buyerName || '',
+      listingTitle: thread.listingTitle || '',
+    });
+  }
+
+  async _extractActiveThreadHeader() {
+    return this.page.evaluate(() => {
+      const DOT_CHARS = ['\u00B7', '\u2022', '\u2027', '\u22C5'];
+      const candidates = [];
+
+      for (const el of document.querySelectorAll('[role="heading"], h2, h3, span, a')) {
+        if (el.offsetParent === null) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.x < 350 || rect.y < 0 || rect.y > 200) continue;
+
+        const text = el.textContent?.trim() || '';
+        if (!text || text.length < 2 || text.length > 180) continue;
+
+        candidates.push({ text, x: rect.x, y: rect.y });
+      }
+
+      candidates.sort((a, b) => a.y - b.y || a.x - b.x);
+
+      for (const candidate of candidates) {
+        const dot = DOT_CHARS.find(char => candidate.text.includes(char));
+        if (!dot) continue;
+
+        const parts = candidate.text.split(dot).map(part => part.trim()).filter(Boolean);
+        if (parts.length >= 2) {
+          return {
+            headerText: candidate.text,
+            buyerName: parts[0],
+            listingTitle: parts.slice(1).join(' ').trim(),
+          };
+        }
+      }
+
+      const fallback = candidates.find(candidate => !/^(view|more|search|marketplace|chats)$/i.test(candidate.text));
+      return fallback ? {
+        headerText: fallback.text,
+        buyerName: fallback.text,
+        listingTitle: '',
+      } : {
+        headerText: '',
+        buyerName: '',
+        listingTitle: '',
+      };
+    });
+  }
+
+  async _captureActiveThreadUrl(thread) {
+    const info = await this.page.evaluate(() => {
+      const hrefs = [];
+      const seen = new Set();
+      const pushHref = (href) => {
+        if (!href) return;
+        try {
+          const absolute = href.startsWith('http') ? href : new URL(href, window.location.origin).toString();
+          if (!seen.has(absolute)) {
+            seen.add(absolute);
+            hrefs.push(absolute);
+          }
+        } catch {
+          // ignore malformed urls
+        }
+      };
+
+      pushHref(window.location.href);
+
+      for (const link of document.querySelectorAll('a[href*="thread_id="], a[href*="/messages/t/"], a[href*="thread_fbid="]')) {
+        const href = link.getAttribute('href') || link.href;
+        pushHref(href);
+      }
+
+      for (const href of hrefs) {
+        const match = href.match(/[?&]thread_id=(\d{6,})/i)
+          || href.match(/\/messages\/t\/(\d{6,})/i)
+          || href.match(/[?&](?:id|thread_fbid)=(\d{6,})/i)
+          || href.match(/\/(\d{6,})(?:[/?#]|$)/);
+        if (match) {
+          return { url: href, realThreadId: match[1] };
+        }
+      }
+
+      return null;
+    });
+
+    const realThreadId = info?.realThreadId || thread._realFbId || '';
+    const realThreadUrl = info?.url || (realThreadId
+      ? `https://www.facebook.com/marketplace/inbox/?thread_id=${realThreadId}`
+      : '');
+
+    if (realThreadId) {
+      thread._realFbId = realThreadId;
+    }
+    if (realThreadUrl) {
+      thread._realFbUrl = realThreadUrl;
+    }
+  }
+
   /**
    * Open a conversation thread by clicking its row in the inbox.
    * The chat panel opens on the right side (URL stays the same).
@@ -910,8 +2061,10 @@ class InboxMonitor {
       await new Promise(r => setTimeout(r, 1000));
     }
 
-    // Click the conversation row by matching buyer name and listing title.
-    const clicked = await this.page.evaluate((buyerName, listingTitle) => {
+    // Click the conversation row by matching buyer name plus listing/message hints.
+    const clicked = await this._clickActiveListingRow(thread);
+    if (false) {
+      await this.page.evaluate((buyerName, listingTitle) => {
       const DOT_CHARS = ['·', '\u00B7', '\u2022', '\u2027', '\u22C5'];
       function hasDot(text) {
         for (const d of DOT_CHARS) { if (text.includes(d)) return true; }
@@ -958,15 +2111,27 @@ class InboxMonitor {
         return text.substring(0, 80);
       }
       return null;
-    }, thread.buyerName, thread.listingTitle || '');
-
-    if (!clicked) {
-      console.log('[inbox-monitor] Could not click thread row');
-      return [];
+      }, thread.buyerName, thread.listingTitle || '');
     }
 
-    console.log(`[inbox-monitor] Clicked: ${clicked}`);
-    await humanDelay(3000, 5000);
+    if (!clicked) {
+      // Fallback: if we have a real FB thread ID, open via Messenger URL
+      // which directly loads the conversation (unlike marketplace inbox URLs)
+      const realId = thread._realFbId;
+      if (realId) {
+        const messengerUrl = `https://www.facebook.com/messages/t/${realId}`;
+        console.log(`[inbox-monitor] Row click failed — opening via Messenger: ${messengerUrl}`);
+        await this.page.goto(messengerUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        await humanDelay(3000, 5000);
+        await this._dismissMessengerDialogs().catch(() => {});
+      } else {
+        console.log('[inbox-monitor] Could not click thread row (no fallback URL)');
+        return [];
+      }
+    }
+
+    console.log(`[inbox-monitor] Clicked: ${clicked || 'via fallback'}`);
+    // await humanDelay already done in both paths above
 
     // Dismiss dialogs but do NOT press Escape — that would close the chat panel
     await this.page.evaluate(() => {
@@ -985,9 +2150,29 @@ class InboxMonitor {
     });
     await new Promise(r => setTimeout(r, 500));
 
+    const header = await this._extractActiveThreadHeader();
+    if (header?.listingTitle && !thread.listingTitle) {
+      thread.listingTitle = header.listingTitle;
+      console.log(`[inbox-monitor] Filled listing title from chat header: ${thread.listingTitle}`);
+    }
+    if (header?.buyerName && (!thread.buyerName || /^unknown$/i.test(thread.buyerName))) {
+      thread.buyerName = header.buyerName;
+      console.log(`[inbox-monitor] Updated buyer name from header: ${header.buyerName}`);
+    }
+
+    await this._captureActiveThreadUrl(thread);
+    if (thread._realFbUrl) {
+      console.log(`[inbox-monitor] Captured thread URL: ${thread._realFbUrl}`);
+    }
+
     // Screenshot the opened chat for debugging
     await this.takeScreenshot(`chat_${thread.buyerName}`);
 
+    // Wait for FB to finish loading chat messages (virtual scrolling)
+    await humanDelay(3000, 4000);
+    await this._scrollChatToBottom();
+    // Extra wait + scroll to catch messages FB loads lazily
+    await new Promise(r => setTimeout(r, 2000));
     await this._scrollChatToBottom();
 
     // Extract messages from the chat panel (right side).
@@ -1252,7 +2437,7 @@ class InboxMonitor {
         ? thread._messengerHref
         : `https://www.facebook.com${thread._messengerHref}`;
       console.log(`[inbox-monitor] Navigating to Messenger thread: ${url}`);
-      await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+      await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
       await humanDelay(2000, 4000);
       await this.dismissOverlays();
     } else {
@@ -1421,20 +2606,89 @@ class InboxMonitor {
    *
    * @param {string} text - Message text to send
    * @param {string} expectedBuyer - Buyer name to verify we're in the right chat
+   * @param {string} realFbUrl - Thread URL captured from a previous open
    * @returns {boolean} Whether the message was sent
    */
-  async sendMessage(text, expectedBuyer) {
+  async sendMessage(text, expectedBuyer, realFbUrl) {
     console.log(`[inbox-monitor] Sending message (${text.length} chars) to ${expectedBuyer || 'unknown'}...`);
 
+    if (realFbUrl) {
+      const targetUrl = realFbUrl.startsWith('http')
+        ? realFbUrl
+        : new URL(realFbUrl, 'https://www.facebook.com').toString();
+      console.log(`[inbox-monitor] Navigating directly to thread URL: ${targetUrl}`);
+
+      await this.page.goto(targetUrl, {
+        waitUntil: 'networkidle2',
+        timeout: 60000,
+      });
+      await humanDelay(2000, 4000);
+      await this.page.evaluate(() => {
+        for (const dialog of document.querySelectorAll('[role="dialog"]')) {
+          if (dialog.offsetParent === null) continue;
+          for (const btn of dialog.querySelectorAll('[role="button"], button, [aria-label="Close"]')) {
+            const text = btn.textContent?.trim().toLowerCase() || '';
+            const label = btn.getAttribute('aria-label')?.toLowerCase() || '';
+            if (label === 'close' || text === 'close' || text === 'not now' ||
+                text === 'skip' || text === 'dismiss' || text === 'got it') {
+              btn.click();
+              break;
+            }
+          }
+        }
+      });
+      await new Promise(r => setTimeout(r, 500));
+
+      if (/\/messages\//i.test(targetUrl)) {
+        await this._dismissMessengerDialogs();
+        this._usingMessenger = true;
+      } else {
+        this._usingMessenger = false;
+        // Marketplace inbox URLs (?thread_id=XXX) load the inbox page but don't
+        // open the chat popup. Click the matching thread row to open it.
+        if (expectedBuyer) {
+          const clickResult = await this._clickMarketplaceThreadRow({
+            buyerName: expectedBuyer,
+            listingTitle: '',
+            lastMessage: '',
+          });
+          if (clickResult) {
+            console.log(`[inbox-monitor] Clicked thread row after URL nav: ${clickResult}`);
+            await humanDelay(3000, 5000);
+          } else {
+            console.warn(`[inbox-monitor] Could not click thread row for ${expectedBuyer} after URL nav`);
+          }
+        }
+      }
+
+      await this.page.waitForFunction(() => {
+        return Boolean(
+          document.querySelector('[role="textbox"][contenteditable="true"]')
+          || document.querySelector('[contenteditable="true"]')
+          || document.querySelector('[role="heading"]')
+          || document.querySelector('h2')
+          || document.querySelector('h3')
+        );
+      }, { timeout: 10000 }).catch(() => {});
+    }
+
     // Verify the active chat panel belongs to the expected buyer
-    if (expectedBuyer) {
-      const chatHeader = await this.page.evaluate((buyer) => {
+    // Skip safety check for "Unknown" buyer — can't verify a name we don't know
+    if (expectedBuyer && !/^unknown$/i.test(expectedBuyer.trim())) {
+      // Build name variants: full name, first name, last name
+      const buyerParts = expectedBuyer.trim().split(/\s+/);
+      const nameVariants = [expectedBuyer, ...buyerParts].filter(n => n.length > 1);
+
+      const chatHeader = await this.page.evaluate((variants) => {
+        const norm = (s) => (s || '').toLowerCase().trim();
+        const matches = (text) => variants.some(v => norm(text).includes(norm(v)));
+
         // Look for the buyer name in visible chat panel headers
         const headers = document.querySelectorAll('[role="heading"], h2, h3, [data-testid*="header"]');
         for (const h of headers) {
           if (h.offsetParent === null) continue;
           const text = h.textContent?.trim() || '';
-          if (text.includes(buyer)) return text.substring(0, 80);
+          if (matches(text)) return text.substring(0, 80);
         }
         // Also check any element near the top of the chat area that has the buyer name
         const allEls = document.querySelectorAll('span, a, strong');
@@ -1442,11 +2696,11 @@ class InboxMonitor {
           const rect = el.getBoundingClientRect();
           if (rect.x > 400 && rect.y < 120 && rect.y > 30) {
             const t = el.textContent?.trim() || '';
-            if (t.includes(buyer) && t.length < 100) return t.substring(0, 80);
+            if (matches(t) && t.length < 100) return t.substring(0, 80);
           }
         }
         return null;
-      }, expectedBuyer);
+      }, nameVariants);
 
       if (!chatHeader) {
         console.error(`[inbox-monitor] SAFETY: Chat header does not show "${expectedBuyer}" — aborting send to prevent wrong-recipient delivery`);
@@ -1722,6 +2976,12 @@ class InboxMonitor {
    */
   async close() {
     console.log('[inbox-monitor] Releasing inbox page...');
+    if (this.page && this._responseHandler && typeof this.page.off === 'function') {
+      this.page.off('response', this._responseHandler);
+    }
+    this._responseHandler = null;
+    this._responseInterceptionSetup = false;
+    this._graphqlThreads = [];
     await SharedBrowser.releasePage(this.salespersonId, 'inbox').catch(() => {});
     this.browser = null;
     this.page = null;
