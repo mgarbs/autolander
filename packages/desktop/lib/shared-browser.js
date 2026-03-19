@@ -197,6 +197,20 @@ const SharedBrowser = {
     const pid = slot.browser.process()?.pid || null;
     console.log(`[shared-browser] Chrome launched — PID=${pid} profile=${profileDir}`);
 
+    // Minimize the Chrome window so it doesn't appear on screen (especially Mac
+    // which ignores the --window-position off-screen trick). Uses CDP to minimize
+    // the browser window without switching to headless mode (which FB detects).
+    try {
+      const pages = await slot.browser.pages();
+      if (pages.length > 0) {
+        const cdp = await pages[0].createCDPSession();
+        const { windowId } = await cdp.send('Browser.getWindowForTarget');
+        await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
+      }
+    } catch (err) {
+      console.warn(`[shared-browser] Could not minimize window: ${err.message}`);
+    }
+
     // Crash recovery
     slot._disconnectHandler = () => {
       console.error(`[shared-browser] Chrome DISCONNECTED for ${slot.salespersonId} (PID=${pid})`);
