@@ -611,7 +611,10 @@ module.exports = function createConversationsRouter(prisma) {
       // Save all new buyer messages to DB (for UI display)
       for (const m of scrapedMessages) {
         if (!m.isBuyer) continue;
-        const text = (m.text || '').trim();
+        let text = (m.text || '').trim();
+        if (!text) continue;
+        // Strip name prefix that scraper sometimes leaves (e.g. "Clay\nHello...")
+        text = text.replace(/^[A-Z][a-z]+\n/, '').trim();
         if (!text) continue;
         const existing = await prisma.message.findFirst({
           where: { conversationId: conv.id, direction: 'INBOUND', text },
@@ -622,6 +625,16 @@ module.exports = function createConversationsRouter(prisma) {
           });
         }
       }
+
+      // Delete any old FAILED/PENDING auto_reply so we don't accumulate duplicates
+      await prisma.message.deleteMany({
+        where: {
+          conversationId: conv.id,
+          direction: 'OUTBOUND',
+          intent: 'auto_reply',
+          status: { in: ['FAILED', 'PENDING'] },
+        },
+      });
 
       const outMsg = await prisma.message.create({
         data: {

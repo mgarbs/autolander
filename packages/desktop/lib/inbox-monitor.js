@@ -2206,7 +2206,10 @@ class InboxMonitor {
         'typically replies',
         'View buyer\'s profile',
         'joined Facebook in',
-        'Lives in'
+        'Lives in',
+        'waiting for your response',
+        'is waiting for your',
+        'sent you a message'
       ];
 
       // First pass: find all message rows and group by x position.
@@ -2489,6 +2492,7 @@ class InboxMonitor {
         'View listing', 'You can now rate each other', 'People may rate',
         'is a buyer on Marketplace', 'Replying as', 'typically replies',
         'joined Facebook in', 'Lives in', 'Rate ',
+        'waiting for your response', 'is waiting for your', 'sent you a message',
       ];
 
       // Messenger uses [role="row"] or message-like containers in the main panel
