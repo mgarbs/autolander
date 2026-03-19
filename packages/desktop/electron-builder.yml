@@ -14,6 +14,12 @@ files:
   - lib/**/*
   - node_modules/**/*
   - package.json
+extraFiles:
+  - from: ../../packages/shared
+    to: resources/app/node_modules/@autolander/shared
+    filter:
+      - "**/*"
+      - "!node_modules"
 extraResources:
   - from: src/renderer/dist
     to: renderer
