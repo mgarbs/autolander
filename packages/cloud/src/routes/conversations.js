@@ -623,13 +623,13 @@ module.exports = function createConversationsRouter(prisma) {
         }
       }
 
-      await prisma.message.create({
+      const outMsg = await prisma.message.create({
         data: {
           conversationId: conv.id,
           direction: 'OUTBOUND',
           text: replyText,
           intent: 'auto_reply',
-          status: 'SENT',
+          status: 'PENDING',
           attempts: 1,
         },
       });
@@ -661,7 +661,23 @@ module.exports = function createConversationsRouter(prisma) {
     }
 
     console.log(`[respond] ${buyerName}: "${replyText?.slice(0, 60)}..." score=${scoreResult.score}`);
-    res.json({ reply: replyText || null, conversationId: conv.id });
+    res.json({ reply: replyText || null, conversationId: conv.id, messageId: outMsg?.id || null });
+  });
+
+  router.put('/messages/:messageId/confirm-sent', async (req, res) => {
+    const message = await prisma.message.findFirst({
+      where: { id: req.params.messageId },
+      include: { conversation: true },
+    });
+    if (!message || message.conversation.orgId !== req.orgId) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+    await prisma.message.update({
+      where: { id: req.params.messageId },
+      data: { status: 'SENT', attempts: 1 },
+    });
+    console.log(`[confirm-sent] Message ${req.params.messageId} marked SENT`);
+    res.json({ success: true });
   });
 
   router.post('/:threadId/sync', async (req, res) => {

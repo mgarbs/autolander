@@ -103,19 +103,24 @@ class InboxPolling extends EventEmitter {
 
                 console.log(`[inbox-polling] ${thread.buyerName}: buyer spoke last, requesting response...`);
 
-                const reply = await this._getResponse(threadId, thread, messages);
+                const response = await this._getResponse(threadId, thread, messages);
 
-                if (reply) {
-                    console.log(`[inbox-polling] ${thread.buyerName}: sending reply (${reply.length} chars)`);
+                if (response?.reply) {
+                    console.log(`[inbox-polling] ${thread.buyerName}: sending reply (${response.reply.length} chars)`);
                     try {
                         await this.fbInboxAdapter.sendMessage(
                             threadId,
-                            reply,
+                            response.reply,
                             thread.buyerName,
                             thread.listingTitle
                         );
                         console.log(`[inbox-polling] ${thread.buyerName}: reply sent to FB`);
                         this._messagesForwarded += 1;
+
+                        // Confirm delivery to cloud
+                        if (response.messageId) {
+                            await this._confirmSent(response.messageId);
+                        }
                     } catch (err) {
                         console.error(`[inbox-polling] ${thread.buyerName}: send failed: ${err.message}`);
                     }
@@ -173,7 +178,7 @@ class InboxPolling extends EventEmitter {
 
             const result = await response.json();
             if (result.reply) {
-                return result.reply;
+                return { reply: result.reply, messageId: result.messageId };
             }
             if (result.reason) {
                 console.log(`[inbox-polling] ${thread.buyerName}: no reply (${result.reason})`);
@@ -182,6 +187,26 @@ class InboxPolling extends EventEmitter {
         } catch (err) {
             console.error(`[inbox-polling] Respond error for ${threadId}:`, err.message);
             return null;
+        }
+    }
+
+    async _confirmSent(messageId) {
+        if (!this.serverUrl || !this.accessToken || !messageId) return;
+        try {
+            const endpoint = new URL(
+                `/api/conversations/messages/${encodeURIComponent(messageId)}/confirm-sent`,
+                this.serverUrl
+            ).toString();
+            await fetch(endpoint, {
+                method: 'PUT',
+                headers: {
+                    Authorization: `Bearer ${this.accessToken}`,
+                    'Content-Type': 'application/json',
+                },
+            });
+            console.log(`[inbox-polling] Confirmed delivery: ${messageId}`);
+        } catch (err) {
+            console.error(`[inbox-polling] Failed to confirm delivery: ${err.message}`);
         }
     }
 
