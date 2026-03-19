@@ -50,16 +50,21 @@ class FbInboxAdapter {
       await monitor.navigateToInbox();
 
       const threads = await monitor.getActiveListingThreads();
-      console.log(`[fb-inbox] ${threads.length} active listing threads — opening all (cloud dedup handles duplicates)`);
+
+      // Round-robin: open ONE thread per poll cycle for reliability.
+      // Track which thread to open next using a rotating index.
+      if (!this._nextThreadIndex) this._nextThreadIndex = 0;
+      if (this._nextThreadIndex >= threads.length) this._nextThreadIndex = 0;
+
       const results = [];
-      this.threadCache.clear();
+      if (threads.length === 0) {
+        console.log(`[fb-inbox] 0 active listing threads`);
+      } else {
+        const thread = threads[this._nextThreadIndex];
+        console.log(`[fb-inbox] ${threads.length} active threads — opening ${thread.buyerName} (${this._nextThreadIndex + 1}/${threads.length})`);
 
-      for (let i = 0; i < threads.length; i += 1) {
-        const thread = threads[i];
         this.threadCache.set(thread.threadId, { ...thread });
-
         const messages = await monitor.openThread(thread);
-
         const vehicleMatch = monitor.parseVehicleFromText(thread.listingTitle) || null;
         const hydratedThread = {
           ...thread,
@@ -69,9 +74,7 @@ class FbInboxAdapter {
         this.threadCache.set(thread.threadId, hydratedThread);
         results.push(hydratedThread);
 
-        if (i < threads.length - 1) {
-          await monitor.navigateToInbox();
-        }
+        this._nextThreadIndex = (this._nextThreadIndex + 1) % threads.length;
       }
 
       this.lastCheck = new Date().toISOString();

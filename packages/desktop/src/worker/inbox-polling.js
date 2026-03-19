@@ -88,7 +88,13 @@ class InboxPolling extends EventEmitter {
             const result = await this.fbInboxAdapter.checkInbox();
             const threads = this._extractThreads(result);
 
+            // Process ONE thread per poll cycle for reliability.
+            // Multiple browser navigations in one cycle causes timeouts.
+            // Over successive polls, all threads get processed.
+            let handled = false;
             for (const thread of threads) {
+                if (handled) break;
+
                 const threadId = thread?.threadId || thread?.id;
                 if (!threadId) continue;
 
@@ -116,6 +122,7 @@ class InboxPolling extends EventEmitter {
                         );
                         console.log(`[inbox-polling] ${thread.buyerName}: reply sent to FB`);
                         this._messagesForwarded += 1;
+                        handled = true;
 
                         // Confirm delivery to cloud
                         if (response.messageId) {
@@ -123,6 +130,7 @@ class InboxPolling extends EventEmitter {
                         }
                     } catch (err) {
                         console.error(`[inbox-polling] ${thread.buyerName}: send failed: ${err.message}`);
+                        handled = true; // Don't try another thread if this one failed
                     }
                 }
             }
