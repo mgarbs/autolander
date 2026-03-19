@@ -1965,45 +1965,64 @@ class FacebookPoster {
    * @returns {ElementHandle|null}
    */
   async _findButtonByText(text) {
-    // Strategy 1: aria-label exact match
-    let btn = await this.page.$(`[aria-label="${text}"]`);
-    if (btn) {
-      this.log(`   Found "${text}" button via aria-label`);
-      return btn;
-    }
+    const MAX_ATTEMPTS = 3;
 
-    // Strategy 2: role="button" containing a span with the text
-    btn = await this.page.evaluateHandle((searchText) => {
-      const lower = searchText.toLowerCase();
-      // Check role="button" elements
-      const buttons = document.querySelectorAll('[role="button"], button');
-      for (const btn of buttons) {
-        const spans = btn.querySelectorAll('span');
-        for (const span of spans) {
-          if (span.textContent?.trim().toLowerCase() === lower) {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      // Scroll both document.body AND any scrollable form containers into view
+      await this.page.evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight);
+        // FB Marketplace form is often inside a scrollable dialog/modal
+        for (const el of document.querySelectorAll('[role="dialog"], [role="main"], form')) {
+          if (el.scrollHeight > el.clientHeight) {
+            el.scrollTop = el.scrollHeight;
+          }
+        }
+      });
+      await new Promise(r => setTimeout(r, 500));
+
+      // Strategy 1: aria-label exact match
+      let btn = await this.page.$(`[aria-label="${text}"]`);
+      if (btn) {
+        this.log(`   Found "${text}" button via aria-label (attempt ${attempt})`);
+        return btn;
+      }
+
+      // Strategy 2: role="button" containing a span with the text
+      btn = await this.page.evaluateHandle((searchText) => {
+        const lower = searchText.toLowerCase();
+        const buttons = document.querySelectorAll('[role="button"], button');
+        for (const btn of buttons) {
+          const spans = btn.querySelectorAll('span');
+          for (const span of spans) {
+            if (span.textContent?.trim().toLowerCase() === lower) {
+              return btn;
+            }
+          }
+          if (btn.textContent?.trim().toLowerCase() === lower) {
             return btn;
           }
         }
-        // Also check direct text
-        if (btn.textContent?.trim().toLowerCase() === lower) {
-          return btn;
-        }
+        return null;
+      }, text);
+      if (btn && btn.asElement()) {
+        this.log(`   Found "${text}" button via text content (attempt ${attempt})`);
+        return btn.asElement();
       }
-      return null;
-    }, text);
-    if (btn && btn.asElement()) {
-      this.log(`   Found "${text}" button via text content`);
-      return btn.asElement();
+
+      // Strategy 3: broad text search
+      btn = await this.findByText(text, 'span');
+      if (btn) {
+        this.log(`   Found "${text}" button via findByText (attempt ${attempt})`);
+        return btn;
+      }
+
+      if (attempt < MAX_ATTEMPTS) {
+        this.log(`   Button "${text}" not found (attempt ${attempt}/${MAX_ATTEMPTS}), retrying in 2s...`);
+        await new Promise(r => setTimeout(r, 2000));
+      }
     }
 
-    // Strategy 3: broad text search
-    btn = await this.findByText(text, 'span');
-    if (btn) {
-      this.log(`   Found "${text}" button via findByText`);
-      return btn;
-    }
-
-    this.log(`   WARNING: Button "${text}" not found`);
+    this.log(`   WARNING: Button "${text}" not found after ${MAX_ATTEMPTS} attempts`);
     return null;
   }
 

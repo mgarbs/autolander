@@ -1404,7 +1404,8 @@ class InboxMonitor {
         if (listingTitle) {
           const spaced = listingTitle
             .replace(/([a-z])([A-Z])/g, '$1 $2')   // "FiestaClay" → "Fiesta Clay"
-            .replace(/(\d)([A-Z])/g, '$1 $2');      // "30Clay" → "30 Clay"
+            .replace(/(\d)([A-Z])/g, '$1 $2')       // "30Clay" → "30 Clay"
+            .replace(/(\d)([a-z])/g, '$1 $2');       // "XC90joseph" → "XC90 joseph"
           const words = spaced.split(/\s+/);
           if (words.length >= 3 && /^\d{4}$/.test(words[0])) {
             // Take Year Make Model, strip junk from model: "Fiesta?9:08" → "Fiesta"
