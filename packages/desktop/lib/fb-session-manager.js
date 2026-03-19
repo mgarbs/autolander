@@ -123,15 +123,37 @@ class FbSessionManager {
   }
 
   /**
-   * Delete the stored session file (force re-authentication).
+   * Delete the stored session file AND Chrome profile (force re-authentication).
+   * This kills any running browser and wipes all cached FB auth.
    */
-  deleteSession() {
+  async deleteSession() {
+    const { SharedBrowser } = require('./shared-browser');
+    const { sharedChromeProfileDir } = require('./paths');
+
+    // 1. Kill the running Chrome browser for this user
+    try {
+      await SharedBrowser.teardown(this.salespersonId);
+      console.log(`[fb-session] [${this.salespersonId}] Browser torn down`);
+    } catch (err) {
+      console.warn(`[fb-session] [${this.salespersonId}] Browser teardown error: ${err.message}`);
+    }
+
+    // 2. Delete session cookie file
     if (fs.existsSync(this.sessionFile)) {
       fs.unlinkSync(this.sessionFile);
-      console.log(`[fb-session] [${this.salespersonId}] Session deleted`);
-      return true;
+      console.log(`[fb-session] [${this.salespersonId}] Session file deleted`);
     }
-    return false;
+
+    // 3. Delete Chrome profile directory (wipes all cached FB cookies/storage)
+    const profileDir = sharedChromeProfileDir(this.salespersonId);
+    try {
+      fs.rmSync(profileDir, { recursive: true, force: true });
+      console.log(`[fb-session] [${this.salespersonId}] Chrome profile deleted: ${profileDir}`);
+    } catch (err) {
+      console.warn(`[fb-session] [${this.salespersonId}] Profile cleanup error: ${err.message}`);
+    }
+
+    return true;
   }
 
   /**
