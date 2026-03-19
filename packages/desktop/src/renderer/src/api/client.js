@@ -6,6 +6,7 @@ let BASE_URL = localStorage.getItem('serverUrl') || DEFAULT_API_URL;
 export function setBaseUrl(url) {
   BASE_URL = url;
   localStorage.setItem('serverUrl', url);
+  invalidateCache();
 }
 
 export function getBaseUrl() {
@@ -20,6 +21,33 @@ function getAuthHeaders() {
 }
 
 let _refreshPromise = null;
+
+// Simple time-based cache for API responses
+const _apiCache = new Map();
+const CACHE_TTL_MS = 15 * 1000; // 15 seconds
+
+function getCached(key) {
+  const entry = _apiCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.time > CACHE_TTL_MS) {
+    _apiCache.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+
+function setCache(key, data) {
+  _apiCache.set(key, { data, time: Date.now() });
+}
+
+// Invalidate cache when mutations happen
+function invalidateCache(pattern) {
+  for (const key of _apiCache.keys()) {
+    if (!pattern || key.includes(pattern)) {
+      _apiCache.delete(key);
+    }
+  }
+}
 
 async function tryRefreshToken() {
   // Deduplicate concurrent refresh attempts
@@ -56,7 +84,23 @@ async function tryRefreshToken() {
 }
 
 async function fetchJSON(path, options = {}) {
+  const method = (options.method || 'GET').toUpperCase();
   const { signal } = options;
+  const token = localStorage.getItem('accessToken') || '';
+  const cacheKey = `${BASE_URL}${path}::${token}`;
+
+  // Cache GET requests
+  if (method === 'GET') {
+    const cached = getCached(cacheKey);
+    if (cached) return cached;
+  }
+
+  // Invalidate cache on mutations
+  if (method !== 'GET') {
+    invalidateCache('/api/conversations');
+    invalidateCache('/api/vehicles');
+  }
+
   let res = await fetch(`${BASE_URL}${path}`, {
     headers: { ...getAuthHeaders(), ...options.headers },
     ...options,
@@ -85,7 +129,11 @@ async function fetchJSON(path, options = {}) {
   }
   // If the request was aborted while waiting for the body, bail out
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-  return res.json();
+  const data = await res.json();
+  if (method === 'GET') {
+    setCache(cacheKey, data);
+  }
+  return data;
 }
 
 // --- Response transformers ---

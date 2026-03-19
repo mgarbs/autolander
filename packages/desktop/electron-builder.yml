@@ -2,7 +2,12 @@ appId: com.autolander.desktop
 productName: AutoLander
 copyright: Copyright © 2024 AutoLander
 electronVersion: "28.3.3"
-asar: false
+asar: true
+asarUnpack:
+  - "node_modules/.prisma/**"
+  - "node_modules/@prisma/**"
+  - "**/*.node"
+  - ".chromium/**"
 directories:
   output: release
   buildResources: build
@@ -16,7 +21,7 @@ files:
   - package.json
 extraFiles:
   - from: ../../packages/shared
-    to: resources/app/node_modules/@autolander/shared
+    to: resources/node_modules/@autolander/shared
     filter:
       - "**/*"
       - "!node_modules"
