@@ -96,8 +96,16 @@ class AssistedPostSession {
       this._setStatus('filling_form', 'AI is filling the vehicle details...');
       await this.poster.fillVehicleForm(this.vehicle);
 
-      // Scroll to top so user sees the completed form
-      await this.poster.page.evaluate(() => window.scrollTo(0, 0));
+      // Scroll to bottom so user sees the "Next" button
+      await this.poster.page.evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight);
+        // Also scroll any dialog/form containers
+        for (const el of document.querySelectorAll('[role="dialog"], [role="main"], form')) {
+          if (el.scrollHeight > el.clientHeight) {
+            el.scrollTop = el.scrollHeight;
+          }
+        }
+      });
 
       // Phase 5: Hand over to the user
       this._setStatus('awaiting_review',
