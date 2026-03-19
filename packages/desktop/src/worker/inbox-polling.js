@@ -85,16 +85,14 @@ class InboxPolling extends EventEmitter {
         }, POLL_TIMEOUT);
 
         try {
+            // checkInbox opens ALL active threads sequentially and reads messages.
+            // The LAST thread remains open in the browser.
             const result = await this.fbInboxAdapter.checkInbox();
             const threads = this._extractThreads(result);
 
-            // Process ONE thread per poll cycle for reliability.
-            // Multiple browser navigations in one cycle causes timeouts.
-            // Over successive polls, all threads get processed.
-            let handled = false;
+            // Collect threads that need replies (buyer spoke last)
+            const needsReply = [];
             for (const thread of threads) {
-                if (handled) break;
-
                 const threadId = thread?.threadId || thread?.id;
                 if (!threadId) continue;
 
@@ -107,30 +105,37 @@ class InboxPolling extends EventEmitter {
                     continue;
                 }
 
+                needsReply.push(thread);
+            }
+
+            // Get responses from cloud for all threads that need replies
+            for (const thread of needsReply) {
+                const threadId = thread.threadId || thread.id;
                 console.log(`[inbox-polling] ${thread.buyerName}: buyer spoke last, requesting response...`);
 
-                const response = await this._getResponse(threadId, thread, messages);
+                const response = await this._getResponse(threadId, thread, thread.messages);
 
                 if (response?.reply) {
                     console.log(`[inbox-polling] ${thread.buyerName}: sending reply (${response.reply.length} chars)`);
                     try {
+                        // For the last thread opened by checkInbox, the chat is still
+                        // visible — skip re-navigation. For others, navigate to inbox first.
+                        const skipNav = Boolean(thread._isOpen);
                         await this.fbInboxAdapter.sendMessage(
                             threadId,
                             response.reply,
                             thread.buyerName,
-                            thread.listingTitle
+                            thread.listingTitle,
+                            { skipNavigation: skipNav }
                         );
                         console.log(`[inbox-polling] ${thread.buyerName}: reply sent to FB`);
                         this._messagesForwarded += 1;
-                        handled = true;
 
-                        // Confirm delivery to cloud
                         if (response.messageId) {
                             await this._confirmSent(response.messageId);
                         }
                     } catch (err) {
                         console.error(`[inbox-polling] ${thread.buyerName}: send failed: ${err.message}`);
-                        handled = true; // Don't try another thread if this one failed
                     }
                 }
             }

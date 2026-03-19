@@ -50,31 +50,29 @@ class FbInboxAdapter {
       await monitor.navigateToInbox();
 
       const threads = await monitor.getActiveListingThreads();
-
-      // Round-robin: open ONE thread per poll cycle for reliability.
-      // Track which thread to open next using a rotating index.
-      if (!this._nextThreadIndex) this._nextThreadIndex = 0;
-      if (this._nextThreadIndex >= threads.length) this._nextThreadIndex = 0;
+      console.log(`[fb-inbox] ${threads.length} active listing threads`);
 
       const results = [];
-      if (threads.length === 0) {
-        console.log(`[fb-inbox] 0 active listing threads`);
-      } else {
-        const thread = threads[this._nextThreadIndex];
-        console.log(`[fb-inbox] ${threads.length} active threads — opening ${thread.buyerName} (${this._nextThreadIndex + 1}/${threads.length})`);
+      for (let i = 0; i < threads.length; i++) {
+        const thread = threads[i];
+        console.log(`[fb-inbox] Opening ${thread.buyerName} (${i + 1}/${threads.length})`);
 
-        this.threadCache.set(thread.threadId, { ...thread });
+        // Navigate back to inbox before each thread (except the first)
+        if (i > 0) {
+          await monitor.navigateToInbox();
+        }
+
         const messages = await monitor.openThread(thread);
         const vehicleMatch = monitor.parseVehicleFromText(thread.listingTitle) || null;
         const hydratedThread = {
           ...thread,
           messages,
           vehicleMatch,
+          // Flag: the thread is CURRENTLY OPEN in the browser — sendMessage
+          // can type directly without re-navigating
+          _isOpen: (i === threads.length - 1),
         };
-        this.threadCache.set(thread.threadId, hydratedThread);
         results.push(hydratedThread);
-
-        this._nextThreadIndex = (this._nextThreadIndex + 1) % threads.length;
       }
 
       this.lastCheck = new Date().toISOString();
@@ -84,25 +82,23 @@ class FbInboxAdapter {
     }
   }
 
-  async sendMessage(threadId, text, expectedBuyer, listingTitle) {
+  async sendMessage(threadId, text, expectedBuyer, listingTitle, { skipNavigation } = {}) {
     await this._getMonitor();
     const unlock = await SharedBrowser.lockNavigation(this.salespersonId, 'inbox');
     try {
       const monitor = await this._getMonitor();
       const buyerName = expectedBuyer || '';
-      const resolvedListingTitle = listingTitle || '';
 
-      // Always navigate to inbox and click the thread row to open it.
-      // URL-based navigation is unreliable — _captureActiveThreadUrl grabs
-      // random Messenger links from the page, not the actual thread URL.
-      await monitor.navigateToInbox();
-      const threadToOpen = {
-        threadId,
-        buyerName,
-        listingTitle: resolvedListingTitle,
-      };
+      if (!skipNavigation) {
+        // Navigate to inbox and click the thread row to open it
+        await monitor.navigateToInbox();
+        await monitor.openThread({
+          threadId,
+          buyerName,
+          listingTitle: listingTitle || '',
+        });
+      }
 
-      await monitor.openThread(threadToOpen);
       const sent = await monitor.sendMessage(text, buyerName);
       return { sent };
     } finally {
