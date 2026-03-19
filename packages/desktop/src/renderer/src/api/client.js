@@ -330,8 +330,11 @@ export async function getFbAuthStatus() {
   return { active: false };
 }
 
-export function deleteFbSession() {
-  return Promise.resolve({ success: true });
+export async function deleteFbSession() {
+  if (window.autolander?.fb?.deleteSession) {
+    return window.autolander.fb.deleteSession();
+  }
+  return { success: false, error: 'Not available' };
 }
 
 export async function startAssistedPost(vin) {

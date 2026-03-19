@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('autolander', {
     updateListing: (opts) => ipcRenderer.invoke('fb:update-listing', opts),
     delistVehicle: (opts) => ipcRenderer.invoke('fb:delist-vehicle', opts),
     renewListing: (opts) => ipcRenderer.invoke('fb:renew-listing', opts),
+    deleteSession: () => ipcRenderer.invoke('fb:delete-session'),
     onProgress: (cb) => {
       const listener = (_event, data) => cb(data);
       ipcRenderer.on('fb:progress', listener);
