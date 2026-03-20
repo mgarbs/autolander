@@ -33,6 +33,8 @@ class InboxMonitor {
     this._consecutiveErrors = 0;
     this._usingMessenger = false; // true when fallen back to Messenger
     this._graphqlThreads = [];
+    this._graphqlMessages = [];
+    this._collectingMessages = false;
     this._responseInterceptionSetup = false;
     this._responseHandler = null;
   }
@@ -76,6 +78,9 @@ class InboxMonitor {
         const payloads = this._parseJsonPayloads(body);
         for (const payload of payloads) {
           this._collectGraphqlThreads(payload);
+          if (this._collectingMessages) {
+            this._collectGraphqlMessages(payload);
+          }
         }
       } catch {
         // Best-effort only. DOM parsing remains the fallback path.
@@ -181,6 +186,112 @@ class InboxMonitor {
         inspect(value.node);
       }
     });
+  }
+
+  _collectGraphqlMessages(payload) {
+    const messages = [];
+    const inspect = (candidate) => {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return;
+
+      const msgText = this._extractMessageText(candidate);
+      if (!msgText) return;
+
+      const sender = this._extractMessageSender(candidate);
+      const timestamp = this._extractMessageTimestamp(candidate);
+      const hasSenderSignal = Boolean(
+        sender
+        || candidate.message_sender
+        || candidate.sender
+        || candidate.author
+        || candidate.actor
+      );
+      const hasTimestampSignal = Boolean(timestamp);
+      const hasDirectionSignal = Boolean(
+        candidate.is_viewer_sent
+        || candidate.message_sender?.is_viewer_actor
+        || candidate.author?.is_viewer_actor
+        || candidate.actor?.is_viewer_actor
+        || candidate.is_self
+      );
+
+      if (!hasSenderSignal && !hasTimestampSignal && !hasDirectionSignal) return;
+
+      const isFromUs = Boolean(
+        candidate.is_viewer_sent
+        || candidate.message_sender?.is_viewer_actor
+        || candidate.author?.is_viewer_actor
+        || candidate.actor?.is_viewer_actor
+        || candidate.is_self
+      );
+
+      messages.push({
+        text: msgText,
+        sender: sender || (isFromUs ? 'Me' : 'Buyer'),
+        timestamp: timestamp || '',
+        isBuyer: !isFromUs,
+        _raw: false,
+      });
+    };
+
+    inspect(payload);
+    this._walkJson(payload, (_key, value) => {
+      inspect(value);
+    });
+
+    const seen = new Set(
+      this._graphqlMessages.map(msg => `${msg.isBuyer ? 'B' : 'S'}:${msg.text}`)
+    );
+    for (const msg of messages) {
+      const key = `${msg.isBuyer ? 'B' : 'S'}:${msg.text}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      this._graphqlMessages.push(msg);
+    }
+  }
+
+  _extractMessageText(obj) {
+    for (const key of ['text', 'body', 'snippet', 'message_text']) {
+      const val = this._extractString(obj[key]);
+      if (val && val.length > 0 && val.length < 2000) return val;
+    }
+
+    if (obj.message && typeof obj.message === 'object') {
+      const val = this._extractString(obj.message.text || obj.message.body);
+      if (val) return val;
+    }
+
+    return '';
+  }
+
+  _extractMessageSender(obj) {
+    const senderContainers = [
+      obj.message_sender,
+      obj.sender,
+      obj.author,
+      obj.actor,
+    ];
+
+    for (const container of senderContainers) {
+      if (!container) continue;
+
+      const name = this._extractFieldString(container, ['name', 'short_name', 'full_name', 'display_name'])
+        || this._extractString(container);
+      if (name) return name;
+    }
+
+    return '';
+  }
+
+  _extractMessageTimestamp(obj) {
+    for (const key of ['timestamp_precise', 'timestamp', 'offline_threading_id', 'created_at']) {
+      const val = this._extractNumber(obj[key]);
+      if (typeof val === 'number') return String(val);
+
+      const str = this._extractString(obj[key]);
+      if (str) return str;
+    }
+
+    return '';
   }
 
   _upsertGraphqlThread(thread) {
@@ -2348,12 +2459,11 @@ class InboxMonitor {
         if (cleanText.length < 50) {
           const normClean = cleanText.toLowerCase().replace(/[^a-z\s]/g, '').trim();
           const normBuyer = buyerName.toLowerCase().replace(/[^a-z\s]/g, '').trim();
-          const lenDiff = Math.abs(normClean.length - normBuyer.length);
-          if (normClean && normBuyer && lenDiff <= 3 && (
-            normClean === normBuyer ||
-            normBuyer.startsWith(normClean) ||
-            normClean.startsWith(normBuyer)
-          )) {
+          const buyerParts = normBuyer.split(/\s+/);
+          const isFullName = normClean === normBuyer || normBuyer.startsWith(normClean) || normClean.startsWith(normBuyer);
+          const isFirstName = buyerParts.length > 1 && normClean === buyerParts[0];
+          const isLastName = buyerParts.length > 1 && normClean === buyerParts[buyerParts.length - 1];
+          if (normClean && normBuyer && (isFullName || isFirstName || isLastName)) {
             debug.push(`SKIP name-label: clean="${cleanText}" normC="${normClean}" normB="${normBuyer}"`);
             continue;
           }
@@ -2380,7 +2490,8 @@ class InboxMonitor {
         // Also skip if the entire text is "Today at HH:MM" with no message content.
         const firstLine = cleanText.split('\n')[0].trim();
         const isTimestampLabel =
-          /^(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(at\s+)?\d{1,2}:\d{2}/i.test(firstLine);
+          /^(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(at\s+)?\d{1,2}:\d{2}/i.test(firstLine)
+          || /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}/i.test(firstLine);
         if (isTimestampLabel) { debug.push(`SKIP timestamp: "${firstLine}"`); continue; }
 
         // Determine if buyer: either name-prefixed, or NOT from us
@@ -2433,7 +2544,18 @@ class InboxMonitor {
         }
       }
 
-      return { results, debug };
+      // Deduplicate: Messenger renders messages in nested containers
+      // causing the same text to appear multiple times
+      const deduped = [];
+      const seenTexts = new Set();
+      for (const msg of results) {
+        const key = `${msg.isBuyer ? 'B' : 'S'}:${msg.text}`;
+        if (seenTexts.has(key)) continue;
+        seenTexts.add(key);
+        deduped.push(msg);
+      }
+
+      return { results: deduped, debug };
     }, thread.buyerName);
 
     // Log debug info
@@ -2559,8 +2681,15 @@ class InboxMonitor {
         if (isSentByUs) {
           cleanText = cleanText.replace(/^You sent\s*/i, '').replace(/^You:\s*/i, '');
         } else if (buyerName) {
+          // Strip full buyer name prefix
           const re = new RegExp(`^${buyerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\n]*`, 'i');
           cleanText = cleanText.replace(re, '');
+          // Also strip first-name-only prefix (FB sometimes shows just first name)
+          const firstName = buyerName.split(/\s+/)[0];
+          if (firstName && firstName.length > 1) {
+            const firstRe = new RegExp(`^${firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\n]+`, 'i');
+            cleanText = cleanText.replace(firstRe, '');
+          }
         }
         cleanText = cleanText.replace(/\nEnter$/i, '').replace(/Enter$/i, '').trim();
         cleanText = cleanText.replace(/\n?Message sent$/i, '').trim();
@@ -2568,14 +2697,19 @@ class InboxMonitor {
 
         if (!cleanText || cleanText.length < 2) continue;
 
-        // Skip name-only labels (but not real messages like emails that start with buyer name)
-        const normClean = cleanText.toLowerCase().replace(/[^a-z\s]/g, '').trim();
-        const normBuyer = buyerName.toLowerCase().replace(/[^a-z\s]/g, '').trim();
-        const lenDiff = Math.abs(normClean.length - normBuyer.length);
-        if (normClean && normBuyer && lenDiff <= 3 && (normClean === normBuyer || normBuyer.startsWith(normClean))) continue;
+        // Skip name-only labels (buyer's full name, first name, or last name)
+        if (cleanText.length < 40) {
+          const normClean = cleanText.toLowerCase().replace(/[^a-z\s]/g, '').trim();
+          const normBuyer = buyerName.toLowerCase().replace(/[^a-z\s]/g, '').trim();
+          const buyerParts = normBuyer.split(/\s+/);
+          const isFullName = normClean === normBuyer || normBuyer.startsWith(normClean) || normClean.startsWith(normBuyer);
+          const isFirstName = buyerParts.some(p => p === normClean);
+          if (isFullName || isFirstName) continue;
+        }
 
-        // Skip timestamps
+        // Skip timestamps (day names and month names)
         if (/^(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(at\s+)?\d/i.test(cleanText)) continue;
+        if (/^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d/i.test(cleanText)) continue;
 
         const isBuyer = isBuyerByName || (!isSentByUs && !isBuyerByName);
 
@@ -2616,7 +2750,17 @@ class InboxMonitor {
         }
       }
 
-      return { results, debug };
+      // Deduplicate: Messenger renders messages in nested containers
+      const deduped = [];
+      const seenTexts = new Set();
+      for (const msg of results) {
+        const key = `${msg.isBuyer ? 'B' : 'S'}:${msg.text}`;
+        if (seenTexts.has(key)) continue;
+        seenTexts.add(key);
+        deduped.push(msg);
+      }
+
+      return { results: deduped, debug };
     }, buyerName);
 
     if (messages.debug && messages.debug.length > 0) {
@@ -2646,19 +2790,19 @@ class InboxMonitor {
     const url = `https://www.facebook.com/messages/t/${threadId}`;
     console.log(`[inbox-monitor] Reading ${thread.buyerName} via Messenger: ${url}`);
 
-    await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-    await humanDelay(3000, 4000);
+    this._graphqlMessages = [];
+    this._collectingMessages = true;
 
-    // Dismiss dialogs
-    await this._dismissMessengerDialogs().catch(() => {});
+    try {
+      await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+      await humanDelay(3000, 4000);
 
-    // Wait for chat to load, then scroll to bottom
-    await humanDelay(2000, 3000);
-    await this._scrollChatToBottom();
-    await new Promise(r => setTimeout(r, 2000));
-    await this._scrollChatToBottom();
+      await this._dismissMessengerDialogs().catch(() => {});
+      await humanDelay(2000, 3000);
+    } finally {
+      this._collectingMessages = false;
+    }
 
-    // Extract the buyer name from the header if we don't have it
     const header = await this._extractActiveThreadHeader();
     if (header?.buyerName && (!thread.buyerName || thread.buyerName === 'Unknown')) {
       thread.buyerName = header.buyerName;
@@ -2666,83 +2810,67 @@ class InboxMonitor {
 
     await this.takeScreenshot(`chat_${thread.buyerName}`);
 
-    // Extract messages - reuse the existing Messenger message extraction
     const buyerName = thread.buyerName || 'Unknown';
-    const messages = await this.page.evaluate((buyerName) => {
-      const results = [];
+    const graphqlMessages = this._graphqlMessages;
+    this._graphqlMessages = [];
+
+    if (graphqlMessages.length > 0) {
       const SKIP_PHRASES = [
         'started this chat', 'Send a quick response', 'Tap a response',
-        'View buyer profile', 'Loading...', 'Beware of', 'common scam',
-        'View listing', 'You can now rate each other', 'People may rate',
+        'View buyer profile', 'Beware of', 'common scam',
+        'You can now rate each other', 'People may rate',
         'is a buyer on Marketplace', 'Replying as', 'typically replies',
-        'joined Facebook in', 'Lives in', 'Rate ',
+        'joined Facebook in', 'Lives in',
         'waiting for your response', 'is waiting for your', 'sent you a message',
       ];
 
-      const rows = document.querySelectorAll('[role="row"], [role="gridcell"]');
+      const filtered = graphqlMessages.filter((message) => {
+        if (!message.text || message.text.length < 2) return false;
 
-      for (const row of rows) {
-        if (row.offsetParent === null) continue;
-        const rect = row.getBoundingClientRect();
-        if (rect.x < 300 || rect.width < 100) continue;
-
-        const fullText = row.textContent?.trim() || '';
-        if (!fullText || fullText.length < 2) continue;
-
-        let isNoise = false;
         for (const phrase of SKIP_PHRASES) {
-          if (fullText.includes(phrase)) {
-            isNoise = true;
-            break;
+          if (message.text.includes(phrase)) return false;
+        }
+
+        const normText = message.text.toLowerCase().replace(/[^a-z\s]/g, '').trim();
+        const normBuyer = buyerName.toLowerCase().replace(/[^a-z\s]/g, '').trim();
+        if (normText && normBuyer && Math.abs(normText.length - normBuyer.length) <= 3) {
+          if (normText === normBuyer || normBuyer.startsWith(normText) || normText.startsWith(normBuyer)) {
+            return false;
           }
         }
-        if (isNoise) continue;
 
-        if (fullText.includes('·') || fullText.includes('\u00B7')) continue;
+        return true;
+      });
 
-        const isSentByUs = fullText.startsWith('You sent') || fullText.startsWith('You:');
-        const isBuyerByName = fullText.startsWith(buyerName);
+      const messages = filtered.map(message => ({
+        sender: message.isBuyer ? buyerName : 'Me',
+        text: message.text,
+        timestamp: message.timestamp,
+        isBuyer: message.isBuyer,
+      }));
 
-        let cleanText = row.innerText?.trim() || '';
-        if (isSentByUs) {
-          cleanText = cleanText.replace(/^You sent\s*/i, '').replace(/^You:\s*/i, '');
-        } else if (buyerName) {
-          const re = new RegExp(`^${buyerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\n]*`, 'i');
-          cleanText = cleanText.replace(re, '');
+      if (messages.length > 0) {
+        console.log(`[inbox-monitor] Got ${messages.length} message(s) from GraphQL interception`);
+        for (const message of messages) {
+          console.log(`[inbox-monitor]   ${message.isBuyer ? '<-' : '->'} ${message.sender}: ${message.text.substring(0, 60)}`);
         }
-        cleanText = cleanText.replace(/\nEnter$/i, '').replace(/Enter$/i, '').trim();
-        cleanText = cleanText.replace(/\n?Message sent$/i, '').trim();
-        cleanText = cleanText.replace(/\n?Sent \d+[mhd] ago$/i, '').trim();
-
-        if (!cleanText || cleanText.length < 2) continue;
-
-        // Skip name-only labels
-        const normClean = cleanText.toLowerCase().replace(/[^a-z\s]/g, '').trim();
-        const normBuyer = buyerName.toLowerCase().replace(/[^a-z\s]/g, '').trim();
-        const lenDiff = Math.abs(normClean.length - normBuyer.length);
-        if (normClean && normBuyer && lenDiff <= 3 && (normClean === normBuyer || normBuyer.startsWith(normClean))) continue;
-
-        // Skip timestamps
-        if (/^(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(at\s+)?\d/i.test(cleanText)) continue;
-
-        const isBuyer = isBuyerByName || (!isSentByUs && !isBuyerByName);
-
-        results.push({
-          sender: isBuyer ? buyerName : 'Me',
-          text: cleanText,
-          timestamp: '',
-          isBuyer,
-        });
+        return messages;
       }
 
-      return results;
-    }, buyerName);
-
-    console.log(`[inbox-monitor] Extracted ${messages.length} message(s) from Messenger`);
-    for (const m of messages) {
-      console.log(`[inbox-monitor]   ${m.isBuyer ? '<-' : '->'} ${m.sender}: ${m.text.substring(0, 60)}`);
+      console.log('[inbox-monitor] GraphQL interception only returned filtered messages, falling back to DOM extraction');
+    } else {
+      console.log('[inbox-monitor] No GraphQL messages captured, falling back to DOM extraction');
     }
-    return messages;
+
+    await this._scrollChatToBottom();
+    await new Promise(r => setTimeout(r, 2000));
+    await this._scrollChatToBottom();
+
+    return this._openMessengerThread({
+      ...thread,
+      _alreadyOpen: true,
+      buyerName,
+    });
   }
 
   /**
@@ -3150,6 +3278,8 @@ class InboxMonitor {
     this._responseHandler = null;
     this._responseInterceptionSetup = false;
     this._graphqlThreads = [];
+    this._graphqlMessages = [];
+    this._collectingMessages = false;
     await SharedBrowser.releasePage(this.salespersonId, 'inbox').catch(() => {});
     this.browser = null;
     this.page = null;
