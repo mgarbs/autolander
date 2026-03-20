@@ -27,6 +27,7 @@ const { CommandDispatcher } = require('./ws/command-dispatcher');
 
 const PORT = parseInt(process.env.PORT, 10) || 3000;
 const app = express();
+app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
 // --- Body parsing ---
