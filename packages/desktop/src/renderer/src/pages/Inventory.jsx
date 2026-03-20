@@ -231,19 +231,36 @@ export default function Inventory() {
                      </Badge>
                    )}
                    {v.listings?.facebook_marketplace?.stale && (
-                      <Badge variant="warning" size="xs">
-                        <AlertCircle size={8} className="mr-1" />
+                      <div className="flex flex-wrap gap-1">
                         {(() => {
                           const reason = v.listings.facebook_marketplace.staleReason || '';
-                          const priceMatch = reason.match(/price_changed:([\d.]+)->([\d.]+)/);
-                          if (priceMatch) {
-                            return `$${Number(priceMatch[1]).toLocaleString()} → $${Number(priceMatch[2]).toLocaleString()}`;
+                          const parts = reason.split(',').filter(Boolean);
+                          const badges = [];
+
+                          for (const part of parts) {
+                            const priceMatch = part.match(/price_changed:([\d.]+)->([\d.]+)/);
+                            if (priceMatch) {
+                              badges.push(`Price: $${Number(priceMatch[1]).toLocaleString()} → $${Number(priceMatch[2]).toLocaleString()}`);
+                            } else if (part === 'photos_changed') {
+                              badges.push('Photos Updated');
+                            } else if (part === 'description_changed') {
+                              badges.push('Description Updated');
+                            } else {
+                              badges.push('Needs Update');
+                            }
                           }
-                          return 'NEEDS UPDATE';
+
+                          if (badges.length === 0) badges.push('Needs Update');
+
+                          return badges.map((text, i) => (
+                            <Badge key={i} variant="warning" size="xs">
+                              <AlertCircle size={8} className="mr-1" />
+                              {text}
+                            </Badge>
+                          ));
                         })()}
-                      </Badge>
-                    )}
-                </div>
+                      </div>
+                    )}                </div>
 
                 <div className="absolute bottom-4 right-4 z-20">
                    <div className="px-3 py-1.5 bg-brand-500 text-white font-black text-sm rounded-lg shadow-glow-blue italic">

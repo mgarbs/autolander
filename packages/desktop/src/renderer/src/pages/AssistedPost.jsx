@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getPostQueue, markVehiclePosted, markVehicleUpdated } from '../api/client';
 import FilterDropdown from '../components/FilterDropdown';
+import Badge from '../components/Badge';
 import {
   Send,
   ArrowLeft,
@@ -166,6 +167,38 @@ function VehicleCard({ v, onSelect, variant = 'default', isStarting = false, dis
             </span>
           )}
         </div>
+
+        {isStale && (
+          <div className="flex flex-wrap gap-1 mt-1">
+            {(() => {
+              const reason = v.listings?.facebook_marketplace?.staleReason || '';
+              const parts = reason.split(',').filter(Boolean);
+              const badges = [];
+
+              for (const part of parts) {
+                const priceMatch = part.match(/price_changed:([\d.]+)->([\d.]+)/);
+                if (priceMatch) {
+                  badges.push(`Price: $${Number(priceMatch[1]).toLocaleString()} → $${Number(priceMatch[2]).toLocaleString()}`);
+                } else if (part === 'photos_changed') {
+                  badges.push('Photos Updated');
+                } else if (part === 'description_changed') {
+                  badges.push('Description Updated');
+                } else {
+                  badges.push('Needs Update');
+                }
+              }
+
+              if (badges.length === 0) badges.push('Needs Update');
+
+              return badges.map((text, i) => (
+                <Badge key={i} variant="warning" size="xs">
+                  <AlertCircle size={8} className="mr-1" />
+                  {text}
+                </Badge>
+              ));
+            })()}
+          </div>
+        )}
 
         <button
           onClick={() => onSelect(v)}
