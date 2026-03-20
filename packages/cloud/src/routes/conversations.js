@@ -382,6 +382,9 @@ module.exports = function createConversationsRouter(prisma) {
   router.get('/pipeline', async (req, res) => {
     const orgId = req.orgId;
     const baseWhere = { orgId, archivedAt: null };
+    if (req.user?.role === 'AGENT') {
+      baseWhere.agentId = req.user.sub || req.user.id;
+    }
     const [hot, warm, cold, dead] = await Promise.all([
       prisma.conversation.count({ where: { ...baseWhere, leadScore: { gte: 70 } } }),
       prisma.conversation.count({ where: { ...baseWhere, leadScore: { gte: 45, lt: 70 } } }),
@@ -402,6 +405,11 @@ module.exports = function createConversationsRouter(prisma) {
 
     if (state) where.state = state;
     if (agentId) where.agentId = agentId;
+
+    // AGENT users only see their own leads; ADMIN/MANAGER see all
+    if (!agentId && req.user?.role === 'AGENT') {
+      where.agentId = req.user.sub || req.user.id;
+    }
 
     const conversations = await prisma.conversation.findMany({
       where,
