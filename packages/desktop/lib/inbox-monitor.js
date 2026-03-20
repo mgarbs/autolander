@@ -1349,11 +1349,41 @@ class InboxMonitor {
   }
 
   /**
+   * Get marketplace threads from intercepted GraphQL data.
+   * No DOM scanning - uses structured JSON from FB's own API responses.
+   */
+  async getThreadsFromGraphQL() {
+    console.log('[inbox-monitor] Getting threads from GraphQL data...');
+
+    // Wait a moment for GraphQL responses to be intercepted
+    await humanDelay(2000, 3000);
+
+    const threads = this._graphqlThreads.map((thread, index) => ({
+      threadId: thread.threadId || this._buildSyntheticThreadId(thread.buyerName, thread.listingTitle, thread.realThreadId),
+      buyerName: thread.buyerName || 'Unknown',
+      listingTitle: thread.listingTitle || '',
+      lastMessage: thread.lastMessage || '',
+      unread: thread.unread,
+      timestamp: thread.timestamp || '',
+      realThreadId: thread.realThreadId || '',
+      _realFbId: thread.realThreadId || '',
+      _realFbUrl: thread.realThreadId ? `https://www.facebook.com/messages/t/${thread.realThreadId}` : '',
+      _index: index,
+    }));
+
+    console.log(`[inbox-monitor] Found ${threads.length} thread(s) from GraphQL`);
+    for (const t of threads) {
+      console.log(`[inbox-monitor]   ${t.buyerName} - ${t.listingTitle || 'no title'} [id:${t.realThreadId || 'none'}]`);
+    }
+    return threads;
+  }
+
+  /**
    * Get only threads for ACTIVE listings (ones with a listing photo).
    * Active listing rows have an <img> element (the listing photo).
    * Old/inactive rows have an SVG chat icon instead -- no <img>.
    */
-  async getActiveListingThreads() {
+  async _getActiveListingThreadsFromDom() {
     console.log('[inbox-monitor] Scanning for ACTIVE listing threads only...');
     await humanDelay(1000, 2000);
 
@@ -2600,6 +2630,139 @@ class InboxMonitor {
       console.log(`[inbox-monitor]   ${m.isBuyer ? '←' : '→'} ${m.sender}: ${m.text.substring(0, 60)}`);
     }
     return extracted;
+  }
+
+  /**
+   * Read messages from a thread by navigating directly to its Messenger URL.
+   * No inbox row clicking needed - uses the real thread ID from GraphQL.
+   */
+  async readThreadViaMessenger(thread) {
+    const threadId = thread.realThreadId || thread._realFbId;
+    if (!threadId) {
+      console.warn(`[inbox-monitor] No real thread ID for ${thread.buyerName}, falling back to openThread`);
+      return this.openThread(thread);
+    }
+
+    const url = `https://www.facebook.com/messages/t/${threadId}`;
+    console.log(`[inbox-monitor] Reading ${thread.buyerName} via Messenger: ${url}`);
+
+    await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+    await humanDelay(3000, 4000);
+
+    // Dismiss dialogs
+    await this._dismissMessengerDialogs().catch(() => {});
+
+    // Wait for chat to load, then scroll to bottom
+    await humanDelay(2000, 3000);
+    await this._scrollChatToBottom();
+    await new Promise(r => setTimeout(r, 2000));
+    await this._scrollChatToBottom();
+
+    // Extract the buyer name from the header if we don't have it
+    const header = await this._extractActiveThreadHeader();
+    if (header?.buyerName && (!thread.buyerName || thread.buyerName === 'Unknown')) {
+      thread.buyerName = header.buyerName;
+    }
+
+    await this.takeScreenshot(`chat_${thread.buyerName}`);
+
+    // Extract messages - reuse the existing Messenger message extraction
+    const buyerName = thread.buyerName || 'Unknown';
+    const messages = await this.page.evaluate((buyerName) => {
+      const results = [];
+      const SKIP_PHRASES = [
+        'started this chat', 'Send a quick response', 'Tap a response',
+        'View buyer profile', 'Loading...', 'Beware of', 'common scam',
+        'View listing', 'You can now rate each other', 'People may rate',
+        'is a buyer on Marketplace', 'Replying as', 'typically replies',
+        'joined Facebook in', 'Lives in', 'Rate ',
+        'waiting for your response', 'is waiting for your', 'sent you a message',
+      ];
+
+      const rows = document.querySelectorAll('[role="row"], [role="gridcell"]');
+
+      for (const row of rows) {
+        if (row.offsetParent === null) continue;
+        const rect = row.getBoundingClientRect();
+        if (rect.x < 300 || rect.width < 100) continue;
+
+        const fullText = row.textContent?.trim() || '';
+        if (!fullText || fullText.length < 2) continue;
+
+        let isNoise = false;
+        for (const phrase of SKIP_PHRASES) {
+          if (fullText.includes(phrase)) {
+            isNoise = true;
+            break;
+          }
+        }
+        if (isNoise) continue;
+
+        if (fullText.includes('·') || fullText.includes('\u00B7')) continue;
+
+        const isSentByUs = fullText.startsWith('You sent') || fullText.startsWith('You:');
+        const isBuyerByName = fullText.startsWith(buyerName);
+
+        let cleanText = row.innerText?.trim() || '';
+        if (isSentByUs) {
+          cleanText = cleanText.replace(/^You sent\s*/i, '').replace(/^You:\s*/i, '');
+        } else if (buyerName) {
+          const re = new RegExp(`^${buyerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\n]*`, 'i');
+          cleanText = cleanText.replace(re, '');
+        }
+        cleanText = cleanText.replace(/\nEnter$/i, '').replace(/Enter$/i, '').trim();
+        cleanText = cleanText.replace(/\n?Message sent$/i, '').trim();
+        cleanText = cleanText.replace(/\n?Sent \d+[mhd] ago$/i, '').trim();
+
+        if (!cleanText || cleanText.length < 2) continue;
+
+        // Skip name-only labels
+        const normClean = cleanText.toLowerCase().replace(/[^a-z\s]/g, '').trim();
+        const normBuyer = buyerName.toLowerCase().replace(/[^a-z\s]/g, '').trim();
+        const lenDiff = Math.abs(normClean.length - normBuyer.length);
+        if (normClean && normBuyer && lenDiff <= 3 && (normClean === normBuyer || normBuyer.startsWith(normClean))) continue;
+
+        // Skip timestamps
+        if (/^(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(at\s+)?\d/i.test(cleanText)) continue;
+
+        const isBuyer = isBuyerByName || (!isSentByUs && !isBuyerByName);
+
+        results.push({
+          sender: isBuyer ? buyerName : 'Me',
+          text: cleanText,
+          timestamp: '',
+          isBuyer,
+        });
+      }
+
+      return results;
+    }, buyerName);
+
+    console.log(`[inbox-monitor] Extracted ${messages.length} message(s) from Messenger`);
+    for (const m of messages) {
+      console.log(`[inbox-monitor]   ${m.isBuyer ? '<-' : '->'} ${m.sender}: ${m.text.substring(0, 60)}`);
+    }
+    return messages;
+  }
+
+  /**
+   * Send a message via direct Messenger URL navigation.
+   * If the page is already on this thread's Messenger URL, skip navigation.
+   */
+  async sendViaMessenger(threadId, text, expectedBuyer) {
+    const messengerUrl = `https://www.facebook.com/messages/t/${threadId}`;
+    console.log(`[inbox-monitor] Sending via Messenger to ${expectedBuyer} (${threadId})...`);
+
+    // Check if we're already on the right Messenger page
+    const currentUrl = this.page.url();
+    if (!currentUrl.includes(`/messages/t/${threadId}`)) {
+      await this.page.goto(messengerUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      await humanDelay(2000, 4000);
+      await this._dismissMessengerDialogs().catch(() => {});
+    }
+
+    // Now call the existing sendMessage which handles textbox finding + typing
+    return this.sendMessage(text, expectedBuyer);
   }
 
   /**

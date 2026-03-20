@@ -2,7 +2,7 @@
 
 const EventEmitter = require('events');
 
-const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
 const INITIAL_POLL_DELAY_MS = 15 * 1000; // 15 seconds
 
 class InboxPolling extends EventEmitter {
@@ -126,7 +126,7 @@ class InboxPolling extends EventEmitter {
                             response.reply,
                             thread.buyerName,
                             thread.listingTitle,
-                            { skipNavigation: skipNav }
+                            { skipNavigation: skipNav, realThreadId: thread.realThreadId || thread._realFbId }
                         );
                         console.log(`[inbox-polling] ${thread.buyerName}: reply sent to FB`);
                         this._messagesForwarded += 1;

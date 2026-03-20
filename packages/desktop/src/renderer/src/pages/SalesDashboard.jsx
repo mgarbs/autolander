@@ -4,8 +4,10 @@ import PipelineBar from '../components/PipelineBar';
 import FilterTabs from '../components/FilterTabs';
 import LeadRow from '../components/LeadRow';
 import Badge from '../components/Badge';
+import TimeAgo from '../components/TimeAgo';
 import { getStats, getLeads, getPipeline, archiveConversation } from '../api/client';
 import { useRealtime } from '../context/RealtimeContext';
+import { useAgent } from '../context/AgentContext';
 import {
   Users,
   Flame,
@@ -19,7 +21,10 @@ import {
   Zap,
   Clock,
   Skull,
-  Trash2
+  Trash2,
+  MessageSquare,
+  ShieldCheck,
+  ShieldAlert
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
@@ -27,6 +32,7 @@ import { useNavigate } from 'react-router-dom';
 export default function SalesDashboard() {
   const navigate = useNavigate();
   const { connected, lastEvents } = useRealtime();
+  const agent = useAgent();
   const [stats, setStats] = useState(null);
   const [leads, setLeads] = useState([]);
   const [pipeline, setPipeline] = useState({ hot: 0, warm: 0, cold: 0, dead: 0 });
@@ -138,6 +144,36 @@ export default function SalesDashboard() {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Agent Polling Status Panel */}
+          <div className="flex items-center gap-3 px-4 py-2 bg-surface-900/50 border border-surface-800 rounded-2xl mr-2">
+            <div className="flex flex-col gap-0.5">
+               <div className="flex items-center gap-2">
+                 <div className={`w-1.5 h-1.5 rounded-full ${agent?.inbox?.running ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+                 <span className="text-[10px] font-black text-white uppercase tracking-wider">
+                   {agent?.inbox?.running ? 'AI Active' : 'AI Offline'}
+                 </span>
+               </div>
+               <div className="flex items-center gap-3 text-[9px] font-bold text-surface-500 uppercase tracking-tighter">
+                 <span className="flex items-center gap-1">
+                   {agent?.fbSessionValid ? (
+                     <ShieldCheck size={10} className="text-emerald-500" />
+                   ) : (
+                     <ShieldAlert size={10} className="text-rose-500" />
+                   )}
+                   FB: {agent?.fbSessionValid ? 'OK' : 'ERR'}
+                 </span>
+                 <span className="flex items-center gap-1">
+                    <Clock size={10} />
+                    {agent?.inbox?.lastPoll ? <TimeAgo date={agent.inbox.lastPoll} className="" /> : 'Never'}
+                 </span>
+                 <span className="flex items-center gap-1">
+                    <MessageSquare size={10} />
+                    {agent?.inbox?.messagesForwarded || 0} SENT
+                 </span>
+               </div>
+            </div>
+          </div>
+
           <div className="flex bg-surface-900 p-1 rounded-xl border border-surface-800 mr-2">
              <button
                onClick={() => setViewMode('kanban')}

@@ -49,20 +49,18 @@ class FbInboxAdapter {
       const monitor = await this._getMonitor();
       await monitor.navigateToInbox();
 
-      const threads = await monitor.getActiveListingThreads();
-      console.log(`[fb-inbox] ${threads.length} active listing threads`);
+      const threads = await monitor.getThreadsFromGraphQL();
+      console.log(`[fb-inbox] ${threads.length} threads from GraphQL`);
 
       const results = [];
       for (let i = 0; i < threads.length; i++) {
         const thread = threads[i];
-        console.log(`[fb-inbox] Opening ${thread.buyerName} (${i + 1}/${threads.length})`);
-
-        // Navigate back to inbox before each thread (except the first)
-        if (i > 0) {
-          await monitor.navigateToInbox();
+        if (!thread.realThreadId) {
+          console.log(`[fb-inbox] Skipping ${thread.buyerName} - no thread ID`);
+          continue;
         }
 
-        const messages = await monitor.openThread(thread);
+        const messages = await monitor.readThreadViaMessenger(thread);
         const vehicleMatch = monitor.parseVehicleFromText(thread.listingTitle) || null;
         const hydratedThread = {
           ...thread,
@@ -75,6 +73,11 @@ class FbInboxAdapter {
         results.push(hydratedThread);
       }
 
+      if (results.length > 0) {
+        results.forEach(thread => { thread._isOpen = false; });
+        results[results.length - 1]._isOpen = true;
+      }
+
       this.lastCheck = new Date().toISOString();
       return results;
     } finally {
@@ -82,24 +85,27 @@ class FbInboxAdapter {
     }
   }
 
-  async sendMessage(threadId, text, expectedBuyer, listingTitle, { skipNavigation } = {}) {
+  async sendMessage(threadId, text, expectedBuyer, listingTitle, { skipNavigation, realThreadId } = {}) {
     await this._getMonitor();
     const unlock = await SharedBrowser.lockNavigation(this.salespersonId, 'inbox');
     try {
       const monitor = await this._getMonitor();
-      const buyerName = expectedBuyer || '';
+      if (realThreadId) {
+        const sent = await monitor.sendViaMessenger(realThreadId, text, expectedBuyer);
+        return { sent };
+      }
 
       if (!skipNavigation) {
         // Navigate to inbox and click the thread row to open it
         await monitor.navigateToInbox();
         await monitor.openThread({
           threadId,
-          buyerName,
+          buyerName: expectedBuyer || '',
           listingTitle: listingTitle || '',
         });
       }
 
-      const sent = await monitor.sendMessage(text, buyerName);
+      const sent = await monitor.sendMessage(text, expectedBuyer || '');
       return { sent };
     } finally {
       unlock();

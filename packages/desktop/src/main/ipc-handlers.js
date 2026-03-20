@@ -143,9 +143,13 @@ function isCarsComFeed(feed) {
 function sendAgentStatus(status) {
   const win = getMainWindow();
   if (!win) return;
-  win.webContents.send('agent:status', status);
+  const fullStatus = { ...status };
+  if (inboxPolling) {
+    fullStatus.inbox = inboxPolling.getStatus();
+  }
+  win.webContents.send('agent:status', fullStatus);
   // Backward compatibility for current preload bridge.
-  win.webContents.send('agent:status-update', status);
+  win.webContents.send('agent:status-update', fullStatus);
 }
 
 const FEED_FETCH_UA =
@@ -409,6 +413,17 @@ function updateAgentFbSessionStatus(valid) {
   agentClient.setFbSessionValid(!!valid);
 }
 
+function ensureInboxPolling() {
+  if (inboxPolling) return inboxPolling;
+  const { InboxPolling } = require('../worker/inbox-polling');
+  inboxPolling = new InboxPolling({ fbInboxAdapter: getIpcFbInboxAdapter() });
+  inboxPolling.on('poll-complete', () => {
+    if (agentClient) sendAgentStatus(agentClient.getStatus());
+  });
+  console.log('[ipc] InboxPolling created');
+  return inboxPolling;
+}
+
 function registerIpcHandlers(ipcMain) {
   // --- Agent connection ---
   ipcMain.handle('agent:login', async (_event, { serverUrl, accessToken }) => {
@@ -457,12 +472,8 @@ function registerIpcHandlers(ipcMain) {
     // that overlaps with the FB login flow.
     if (localFbValid) {
       try {
-        if (!inboxPolling) {
-          const { InboxPolling } = require('../worker/inbox-polling');
-          inboxPolling = new InboxPolling({ fbInboxAdapter: getIpcFbInboxAdapter() });
-          console.log('[ipc] InboxPolling created');
-        }
-        inboxPolling.start(getIpcFbInboxAdapter(), {
+        const poller = ensureInboxPolling();
+        poller.start(getIpcFbInboxAdapter(), {
           serverUrl: nextServerUrl,
           accessToken: nextAccessToken,
         });
@@ -507,7 +518,11 @@ function registerIpcHandlers(ipcMain) {
 
   ipcMain.handle('agent:get-status', () => {
     if (!agentClient) return { connected: false, fbSessionValid: false };
-    return agentClient.getStatus();
+    const status = agentClient.getStatus();
+    if (inboxPolling) {
+      status.inbox = inboxPolling.getStatus();
+    }
+    return status;
   });
 
   ipcMain.handle('agent:get-config', () => {
@@ -532,11 +547,8 @@ function registerIpcHandlers(ipcMain) {
         updateAgentFbSessionStatus(valid);
         if (valid && agentCredentials.serverUrl && agentCredentials.accessToken && !inboxPolling?._active) {
           try {
-            if (!inboxPolling) {
-              const { InboxPolling } = require('../worker/inbox-polling');
-              inboxPolling = new InboxPolling({ fbInboxAdapter: getIpcFbInboxAdapter() });
-            }
-            inboxPolling.start(getIpcFbInboxAdapter(), {
+            const poller = ensureInboxPolling();
+            poller.start(getIpcFbInboxAdapter(), {
               serverUrl: agentCredentials.serverUrl,
               accessToken: agentCredentials.accessToken,
             });
