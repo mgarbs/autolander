@@ -467,7 +467,17 @@ module.exports = function createConversationsRouter(prisma) {
     });
 
     if (!conv) {
-      const matchedVehicleId = await resolveVehicle(orgId, listingTitle);
+      // Try listing title first, then scan messages for vehicle mentions
+      let matchedVehicleId = await resolveVehicle(orgId, listingTitle);
+      if (!matchedVehicleId) {
+        for (const m of scrapedMessages) {
+          const vMatch = (m.text || '').match(/\b(19\d{2}|20[0-3]\d)\s+(\w+)\s+([\w-]+)/);
+          if (vMatch) {
+            matchedVehicleId = await resolveVehicle(orgId, `${vMatch[1]} ${vMatch[2]} ${vMatch[3]}`);
+            if (matchedVehicleId) break;
+          }
+        }
+      }
       conv = await prisma.conversation.create({
         data: {
           threadId,
@@ -485,8 +495,17 @@ module.exports = function createConversationsRouter(prisma) {
       console.log(`[respond] Created conversation ${conv.id} for thread ${threadId}`);
     }
 
-    if (!conv.vehicleId && listingTitle) {
-      const matchedVehicleId = await resolveVehicle(orgId, listingTitle);
+    if (!conv.vehicleId) {
+      let matchedVehicleId = listingTitle ? await resolveVehicle(orgId, listingTitle) : null;
+      if (!matchedVehicleId) {
+        for (const m of scrapedMessages) {
+          const vMatch = (m.text || '').match(/\b(19\d{2}|20[0-3]\d)\s+(\w+)\s+([\w-]+)/);
+          if (vMatch) {
+            matchedVehicleId = await resolveVehicle(orgId, `${vMatch[1]} ${vMatch[2]} ${vMatch[3]}`);
+            if (matchedVehicleId) break;
+          }
+        }
+      }
       if (matchedVehicleId) {
         conv = await prisma.conversation.update({
           where: { id: conv.id },
@@ -615,25 +634,25 @@ module.exports = function createConversationsRouter(prisma) {
       replyText = truncated;
     }
 
+    // Save ALL scraped messages to DB for UI display (buyer AND ours)
+    for (const m of scrapedMessages) {
+      let text = (m.text || '').trim();
+      if (!text) continue;
+      text = text.replace(/^[A-Z][a-z]+\n/, '').trim();
+      if (!text) continue;
+      const direction = m.isBuyer ? 'INBOUND' : 'OUTBOUND';
+      const existing = await prisma.message.findFirst({
+        where: { conversationId: conv.id, direction, text },
+      });
+      if (!existing) {
+        await prisma.message.create({
+          data: { conversationId: conv.id, direction, text, status: 'SENT' },
+        });
+      }
+    }
+
     let outMsg = null;
     if (replyText) {
-      // Save all new buyer messages to DB (for UI display)
-      for (const m of scrapedMessages) {
-        if (!m.isBuyer) continue;
-        let text = (m.text || '').trim();
-        if (!text) continue;
-        // Strip name prefix that scraper sometimes leaves (e.g. "Clay\nHello...")
-        text = text.replace(/^[A-Z][a-z]+\n/, '').trim();
-        if (!text) continue;
-        const existing = await prisma.message.findFirst({
-          where: { conversationId: conv.id, direction: 'INBOUND', text },
-        });
-        if (!existing) {
-          await prisma.message.create({
-            data: { conversationId: conv.id, direction: 'INBOUND', text },
-          });
-        }
-      }
 
       // Delete any old FAILED/PENDING auto_reply so we don't accumulate duplicates
       await prisma.message.deleteMany({
