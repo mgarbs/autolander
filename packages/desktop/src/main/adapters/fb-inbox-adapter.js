@@ -115,6 +115,15 @@ class FbInboxAdapter {
 
       this.lastCheck = new Date().toISOString();
       return results;
+    } catch (err) {
+      // If checkInbox fails (timeout, browser hung), kill the browser
+      // so the next poll gets a fresh one instead of hitting the same dead browser
+      console.error(`[fb-inbox] checkInbox failed: ${err.message} — resetting browser`);
+      if (this.monitor) {
+        await this.monitor.close().catch(() => {});
+        this.monitor = null;
+      }
+      throw err;
     } finally {
       unlock();
     }
