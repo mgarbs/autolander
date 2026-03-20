@@ -63,6 +63,11 @@ class InboxMonitor {
     return this;
   }
 
+  async _goto(url, options = {}) {
+    await this.page.goto(url, options);
+    await SharedBrowser.minimizeWindow(this.salespersonId);
+  }
+
   _setupResponseInterception() {
     if (!this.page || this._responseInterceptionSetup) return;
 
@@ -771,7 +776,7 @@ class InboxMonitor {
    */
   async checkLoginStatus() {
     try {
-      await this.page.goto('https://www.facebook.com', { waitUntil: 'networkidle2' });
+      await this._goto('https://www.facebook.com', { waitUntil: 'networkidle2' });
       await humanDelay(2000, 4000);
 
       const loginForm = await this.page.$('input[name="email"]');
@@ -852,7 +857,7 @@ class InboxMonitor {
       await new Promise(r => setTimeout(r, 800));
     }
 
-    await this.page.goto('https://www.facebook.com/marketplace/inbox/', {
+    await this._goto('https://www.facebook.com/marketplace/inbox/', {
       waitUntil: 'networkidle2',
       timeout: 60000
     });
@@ -950,7 +955,7 @@ class InboxMonitor {
   async _navigateViaMessenger() {
     console.log('[inbox-monitor] Navigating to Facebook Messenger as fallback...');
 
-    await this.page.goto('https://www.facebook.com/messages/t/', {
+    await this._goto('https://www.facebook.com/messages/t/', {
       waitUntil: 'networkidle2',
       timeout: 60000,
     });
@@ -2263,7 +2268,7 @@ class InboxMonitor {
       if (realId) {
         const messengerUrl = `https://www.facebook.com/messages/t/${realId}`;
         console.log(`[inbox-monitor] Row click failed — opening via Messenger: ${messengerUrl}`);
-        await this.page.goto(messengerUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        await this._goto(messengerUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await humanDelay(3000, 5000);
         await this._dismissMessengerDialogs().catch(() => {});
       } else {
@@ -2593,7 +2598,7 @@ class InboxMonitor {
         ? thread._messengerHref
         : `https://www.facebook.com${thread._messengerHref}`;
       console.log(`[inbox-monitor] Navigating to Messenger thread: ${url}`);
-      await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+      await this._goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
       await humanDelay(2000, 4000);
       await this.dismissOverlays();
     } else {
@@ -2794,7 +2799,7 @@ class InboxMonitor {
     this._collectingMessages = true;
 
     try {
-      await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 15000 });
+      await this._goto(url, { waitUntil: 'networkidle2', timeout: 15000 });
       await humanDelay(2000, 3000);
 
       await this._dismissMessengerDialogs().catch(() => {});
@@ -2884,7 +2889,7 @@ class InboxMonitor {
     // Check if we're already on the right Messenger page
     const currentUrl = this.page.url();
     if (!currentUrl.includes(`/messages/t/${threadId}`)) {
-      await this.page.goto(messengerUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      await this._goto(messengerUrl, { waitUntil: 'networkidle2', timeout: 60000 });
       await humanDelay(2000, 4000);
       await this._dismissMessengerDialogs().catch(() => {});
     }
@@ -2914,7 +2919,7 @@ class InboxMonitor {
         : new URL(realFbUrl, 'https://www.facebook.com').toString();
       console.log(`[inbox-monitor] Navigating directly to thread URL: ${targetUrl}`);
 
-      await this.page.goto(targetUrl, {
+      await this._goto(targetUrl, {
         waitUntil: 'networkidle2',
         timeout: 60000,
       });

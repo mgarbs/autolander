@@ -200,16 +200,7 @@ const SharedBrowser = {
     // Minimize the Chrome window so it doesn't appear on screen (especially Mac
     // which ignores the --window-position off-screen trick). Uses CDP to minimize
     // the browser window without switching to headless mode (which FB detects).
-    try {
-      const pages = await slot.browser.pages();
-      if (pages.length > 0) {
-        const cdp = await pages[0].createCDPSession();
-        const { windowId } = await cdp.send('Browser.getWindowForTarget');
-        await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
-      }
-    } catch (err) {
-      console.warn(`[shared-browser] Could not minimize window: ${err.message}`);
-    }
+    await this.minimizeWindow(slot.salespersonId);
 
     // Crash recovery
     slot._disconnectHandler = () => {
@@ -319,6 +310,33 @@ const SharedBrowser = {
   getBrowser(salespersonId) {
     const slot = slots.get(salespersonId);
     return slot ? slot.browser : null;
+  },
+
+  /**
+   * Re-minimize the browser window (Mac un-minimizes on navigation).
+   */
+  async minimizeWindow(salespersonId) {
+    const slot = slots.get(salespersonId);
+    if (!slot?.browser) return;
+
+    let cdp = null;
+    try {
+      const pages = await slot.browser.pages();
+      if (pages.length === 0) return;
+
+      cdp = await pages[0].createCDPSession();
+      const { windowId } = await cdp.send('Browser.getWindowForTarget');
+      await cdp.send('Browser.setWindowBounds', {
+        windowId,
+        bounds: { windowState: 'minimized' },
+      });
+    } catch (_) {
+      // Best-effort only.
+    } finally {
+      if (cdp) {
+        await cdp.detach().catch(() => {});
+      }
+    }
   },
 
   /**

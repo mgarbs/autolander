@@ -14,6 +14,7 @@ class InboxPolling extends EventEmitter {
         this._initialTimer = null;
         this._running = false;
         this._active = false;
+        this._paused = false;
         this._lastPoll = null;
         this._intervalNextAt = null;
         this._initialPollAt = null;
@@ -61,13 +62,25 @@ class InboxPolling extends EventEmitter {
         this._initialTimer = null;
         this._timer = null;
         this._active = false;
+        this._paused = false;
         this._initialPollAt = null;
         this._intervalNextAt = null;
+    }
+
+    pause() {
+        this._paused = true;
+        console.log('[inbox-polling] Paused (posting in progress)');
+    }
+
+    resume() {
+        this._paused = false;
+        console.log('[inbox-polling] Resumed');
     }
 
     getStatus() {
         return {
             running: this._active,
+            paused: this._paused,
             lastPoll: this._lastPoll,
             nextPoll: this._getNextPollTime(),
             messagesForwarded: this._messagesForwarded,
@@ -75,6 +88,10 @@ class InboxPolling extends EventEmitter {
     }
 
     async _poll() {
+        if (this._paused) {
+            console.log('[inbox-polling] Skipping poll (paused for posting)');
+            return;
+        }
         if (this._running) return;
         this._running = true;
         this._lastPoll = Date.now();

@@ -80,6 +80,7 @@ async function updateAdapterSalespersonId(id) {
 let ipcFbAuthAdapter = null;
 let ipcFbPosterAdapter = null;
 let ipcFbInboxAdapter = null;
+const ASSISTED_POST_TERMINAL_STATES = new Set(['success', 'error', 'timeout']);
 
 function getIpcFbAuthAdapter() {
   if (!ipcFbAuthAdapter) {
@@ -424,6 +425,34 @@ function ensureInboxPolling() {
   return inboxPolling;
 }
 
+function pauseInboxPollingForAssistedPost() {
+  if (!inboxPolling) return;
+  inboxPolling.pause();
+  if (agentClient) sendAgentStatus(agentClient.getStatus());
+}
+
+function resumeInboxPollingAfterAssistedPost() {
+  if (!inboxPolling) return;
+  inboxPolling.resume();
+  if (agentClient) sendAgentStatus(agentClient.getStatus());
+}
+
+function attachAssistedSessionPollingResume(adapter) {
+  const session = adapter?.assistedSession;
+  if (!session) return false;
+  if (session._pollingResumeHookAttached) return true;
+
+  const forwardStatus = session.onStatusChange;
+  session.onStatusChange = (status) => {
+    forwardStatus?.(status);
+    if (ASSISTED_POST_TERMINAL_STATES.has(status?.state)) {
+      resumeInboxPollingAfterAssistedPost();
+    }
+  };
+  session._pollingResumeHookAttached = true;
+  return true;
+}
+
 function registerIpcHandlers(ipcMain) {
   // --- Agent connection ---
   ipcMain.handle('agent:login', async (_event, { serverUrl, accessToken }) => {
@@ -622,25 +651,42 @@ function registerIpcHandlers(ipcMain) {
   });
 
   ipcMain.handle('fb:start-assisted-post', async (_event, { vehicle }) => {
+    const adapter = getIpcFbPosterAdapter();
     try {
-      return await getIpcFbPosterAdapter().startAssistedPost(vehicle);
+      pauseInboxPollingForAssistedPost();
+      const result = await adapter.startAssistedPost(vehicle);
+      if (!attachAssistedSessionPollingResume(adapter)) {
+        resumeInboxPollingAfterAssistedPost();
+      }
+      return result;
     } catch (error) {
+      resumeInboxPollingAfterAssistedPost();
       return asErrorResult(error);
     }
   });
 
   ipcMain.handle('fb:cancel-assisted-post', async () => {
     try {
-      return await getIpcFbPosterAdapter().cancelAssistedPost();
+      const result = await getIpcFbPosterAdapter().cancelAssistedPost();
+      resumeInboxPollingAfterAssistedPost();
+      return result;
     } catch (error) {
+      resumeInboxPollingAfterAssistedPost();
       return asErrorResult(error);
     }
   });
 
   ipcMain.handle('fb:update-listing', async (_event, { vehicle, listingUrl }) => {
+    const adapter = getIpcFbPosterAdapter();
     try {
-      return await getIpcFbPosterAdapter().startAssistedUpdate(vehicle, listingUrl);
+      pauseInboxPollingForAssistedPost();
+      const result = await adapter.startAssistedUpdate(vehicle, listingUrl);
+      if (!attachAssistedSessionPollingResume(adapter)) {
+        resumeInboxPollingAfterAssistedPost();
+      }
+      return result;
     } catch (error) {
+      resumeInboxPollingAfterAssistedPost();
       return asErrorResult(error);
     }
   });
