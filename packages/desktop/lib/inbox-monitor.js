@@ -2794,8 +2794,8 @@ class InboxMonitor {
     this._collectingMessages = true;
 
     try {
-      await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-      await humanDelay(3000, 4000);
+      await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 15000 });
+      await humanDelay(2000, 3000);
 
       await this._dismissMessengerDialogs().catch(() => {});
       await humanDelay(2000, 3000);

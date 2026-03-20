@@ -49,28 +49,63 @@ class FbInboxAdapter {
       const monitor = await this._getMonitor();
       await monitor.navigateToInbox();
 
-      const threads = await monitor.getThreadsFromGraphQL();
-      console.log(`[fb-inbox] ${threads.length} threads from GraphQL`);
+      const allThreads = await monitor.getThreadsFromGraphQL();
+
+      // Filter threads:
+      // - Must have a real FB thread ID
+      // - Must have a known buyer name
+      // - Must have recent activity (timestamp within last 7 days) — filters dead/old threads
+      const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+      const now = Date.now();
+      const threads = allThreads.filter(t => {
+        if (!t.realThreadId) return false;
+        if (!t.buyerName || t.buyerName === 'Unknown') {
+          console.log(`[fb-inbox] Skip ${t.realThreadId?.slice(-6) || '?'} — unknown buyer`);
+          return false;
+        }
+        // Filter by timestamp if available (GraphQL returns ms or seconds since epoch)
+        if (t.timestamp) {
+          let ts = parseInt(t.timestamp, 10);
+          if (ts && ts < 1e12) ts *= 1000; // convert seconds to ms
+          if (ts && (now - ts) > SEVEN_DAYS_MS) {
+            console.log(`[fb-inbox] Skip ${t.buyerName} — last activity ${Math.round((now - ts) / 86400000)}d ago`);
+            return false;
+          }
+        }
+        return true;
+      });
+      console.log(`[fb-inbox] ${allThreads.length} total → ${threads.length} active (last 7 days)`);
 
       const results = [];
       for (let i = 0; i < threads.length; i++) {
         const thread = threads[i];
-        if (!thread.realThreadId) {
-          console.log(`[fb-inbox] Skipping ${thread.buyerName} - no thread ID`);
-          continue;
-        }
 
-        const messages = await monitor.readThreadViaMessenger(thread);
-        const vehicleMatch = monitor.parseVehicleFromText(thread.listingTitle) || null;
-        const hydratedThread = {
-          ...thread,
-          messages,
-          vehicleMatch,
-          // Flag: the thread is CURRENTLY OPEN in the browser — sendMessage
-          // can type directly without re-navigating
-          _isOpen: (i === threads.length - 1),
-        };
-        results.push(hydratedThread);
+        try {
+          const messages = await monitor.readThreadViaMessenger(thread);
+
+          // If Messenger showed "content not available", skip this thread
+          const contentUnavailable = await monitor.page.evaluate(() => {
+            return document.body?.textContent?.includes('isn\'t available right now') || false;
+          }).catch(() => false);
+          if (contentUnavailable) {
+            console.log(`[fb-inbox] ${thread.buyerName} — content not available, stopping (remaining threads are older)`);
+            break;
+          }
+
+          const vehicleMatch = monitor.parseVehicleFromText(thread.listingTitle) || null;
+          const hydratedThread = {
+            ...thread,
+            messages,
+            vehicleMatch,
+            _isOpen: (i === threads.length - 1),
+          };
+          results.push(hydratedThread);
+        } catch (err) {
+          // Threads are sorted newest-first. If one times out, the rest are older
+          // and will also timeout. Stop processing to save time.
+          console.warn(`[fb-inbox] ${thread.buyerName} failed (${err.message}) — assuming remaining ${threads.length - i - 1} threads are older, stopping`);
+          break;
+        }
       }
 
       if (results.length > 0) {
