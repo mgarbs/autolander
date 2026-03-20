@@ -37,29 +37,27 @@ function createAuthRouter(prisma) {
         return res.status(400).json({ error: 'Display name is required.' });
       }
 
-      const orgCount = await prisma.organization.count();
-      const isFirstUser = orgCount === 0;
-
       let orgId;
       let userRole;
 
-      if (isFirstUser) {
+      // Check if an admin is inviting a team member (has valid token)
+      const token = extractToken(req);
+      const decoded = token ? verifyAccessToken(token) : null;
+
+      if (decoded && ['ADMIN', 'MANAGER'].includes(decoded.role)) {
+        // Admin/manager inviting a team member into their org
+        orgId = decoded.orgId;
+        userRole = ['ADMIN', 'MANAGER', 'AGENT'].includes(role) ? role : 'AGENT';
+      } else {
+        // Self-signup: create a new org for this user (isolated dealership)
         const resolvedOrgName = (orgName && orgName.trim()) || `${displayName.trim()}'s Dealership`;
-        const slug = (orgSlug || resolvedOrgName).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        const slug = (orgSlug || resolvedOrgName).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '-' + Date.now().toString(36);
 
         const org = await prisma.organization.create({
           data: { name: resolvedOrgName.trim(), slug },
         });
         orgId = org.id;
         userRole = 'ADMIN';
-      } else {
-        const token = extractToken(req);
-        const decoded = verifyAccessToken(token);
-        if (!decoded || !['ADMIN', 'MANAGER'].includes(decoded.role)) {
-          return res.status(403).json({ error: 'Admin or manager access required to create users.' });
-        }
-        orgId = decoded.orgId;
-        userRole = ['ADMIN', 'MANAGER', 'AGENT'].includes(role) ? role : 'AGENT';
       }
 
       const existing = await prisma.user.findFirst({
