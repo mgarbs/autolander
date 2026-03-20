@@ -615,6 +615,7 @@ module.exports = function createConversationsRouter(prisma) {
       replyText = truncated;
     }
 
+    let outMsg = null;
     if (replyText) {
       // Save all new buyer messages to DB (for UI display)
       for (const m of scrapedMessages) {
@@ -644,7 +645,7 @@ module.exports = function createConversationsRouter(prisma) {
         },
       });
 
-      const outMsg = await prisma.message.create({
+      outMsg = await prisma.message.create({
         data: {
           conversationId: conv.id,
           direction: 'OUTBOUND',
