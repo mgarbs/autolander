@@ -141,6 +141,24 @@ function isVehiclePhoto(src) {
   if (src.includes('favicon')) return false;
   if (/\.svg(?:\?|#|$)/i.test(src)) return false;
   if (/\b(?:1x1|spacer|pixel|blank)\b/i.test(src)) return false;
+  if (src.includes('dealerrater.com')) return false;
+  if (src.includes('/employees/')) return false;
+  if (src.includes('/mobile-apps/')) return false;
+  if (src.includes('app-store')) return false;
+  if (src.includes('google-play')) return false;
+  if (src.includes('cldstatic/wp-content')) return false;
+  if (src.includes('assets.carsdn.co')) return false;
+  if (src.includes('/csa/')) return false;
+  if (src.includes('seal.png')) return false;
+  if (src.includes('og-img')) return false;
+  if (src.includes('sprite')) return false;
+  if (src.includes('icon')) return false;
+  if (src.includes('badge')) return false;
+  if (src.includes('banner')) return false;
+  if (src.includes('tracking')) return false;
+  if (src.includes('analytics')) return false;
+  if (src.includes('ad-')) return false;
+  if (src.includes('/ads/')) return false;
   return true;
 }
 
@@ -214,9 +232,12 @@ function extractPhotos(html) {
     add($(el).attr('content'));
   });
 
-  // For Cars.com, only keep cstatic-images.com URLs (filter out ads, tracking pixels, etc.)
-  const cstaticUrls = urls.filter((u) => u.includes('cstatic-images.com'));
-  return cstaticUrls.length > 0 ? cstaticUrls : urls;
+  // For Cars.com, only keep vehicle photo URLs from cstatic-images.com.
+  // Real vehicle photos match: platform.cstatic-images.com/{size}/in/v2/{uuid}/{uuid}
+  const vehiclePhotoUrls = urls.filter((u) =>
+    u.includes('cstatic-images.com') && u.includes('/in/v2/')
+  );
+  return vehiclePhotoUrls.length > 0 ? vehiclePhotoUrls : urls;
 }
 
 function isNetworkError(error) {

@@ -109,6 +109,40 @@ function electronFetch(url, ses) {
 }
 
 /**
+ * Check if a URL is a valid vehicle photo (not a logo, icon, or UI image).
+ */
+function isVehiclePhoto(src) {
+  if (!src) return false;
+  if (src.includes('dealer_media')) return false;
+  if (src.includes('static/app-images')) return false;
+  if (src.includes('placeholder')) return false;
+  if (src.includes('no-image')) return false;
+  if (src.includes('logo')) return false;
+  if (src.includes('favicon')) return false;
+  if (/\.svg(?:\?|#|$)/i.test(src)) return false;
+  if (/\b(?:1x1|spacer|pixel|blank)\b/i.test(src)) return false;
+  if (src.includes('dealerrater.com')) return false;
+  if (src.includes('/employees/')) return false;
+  if (src.includes('/mobile-apps/')) return false;
+  if (src.includes('app-store')) return false;
+  if (src.includes('google-play')) return false;
+  if (src.includes('cldstatic/wp-content')) return false;
+  if (src.includes('assets.carsdn.co')) return false;
+  if (src.includes('/csa/')) return false;
+  if (src.includes('seal.png')) return false;
+  if (src.includes('og-img')) return false;
+  if (src.includes('sprite')) return false;
+  if (src.includes('icon')) return false;
+  if (src.includes('badge')) return false;
+  if (src.includes('banner')) return false;
+  if (src.includes('tracking')) return false;
+  if (src.includes('analytics')) return false;
+  if (src.includes('ad-')) return false;
+  if (src.includes('/ads/')) return false;
+  return true;
+}
+
+/**
  * Extract photo URLs from detail page HTML using cheerio.
  */
 function extractPhotos(html) {
@@ -119,11 +153,8 @@ function extractPhotos(html) {
   function add(src) {
     if (!src) return;
     if (!src.includes('cstatic-images.com')) return;
-    if (src.includes('dealer_media')) return;
-    if (src.includes('static/app-images')) return;
-    if (src.includes('placeholder')) return;
-    if (/\.svg(?:\?|#|$)/i.test(src)) return;
-    if (/\b(?:1x1|spacer|pixel|blank)\b/i.test(src)) return;
+    if (!src.includes('/in/v2/')) return;
+    if (!isVehiclePhoto(src)) return;
     const upgraded = src.replace(
       /\/(?:small|medium|large|xlarge)\/in\/v2\//i,
       '/xxlarge/in/v2/'
