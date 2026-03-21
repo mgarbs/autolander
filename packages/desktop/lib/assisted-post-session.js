@@ -121,15 +121,16 @@ class AssistedPostSession {
 
       await this.poster.page.setViewport(VIEWPORT);
 
-      // Restore browser window from minimized state (polling leaves it minimized).
-      // Must happen before screencast — minimized windows produce black frames.
-      const { SharedBrowser } = require('./shared-browser');
-      await SharedBrowser.restoreWindow(this.salespersonId);
-
       const loggedIn = await this.poster.checkLoginStatus();
       if (!loggedIn) {
         throw new Error('Not logged into Facebook. Please authenticate first via Settings > Facebook Auth.');
       }
+
+      // Restore browser window from minimized state AFTER login check
+      // (which navigates to facebook.com). Must happen right before screencast
+      // — minimized windows produce black frames on Mac.
+      const { SharedBrowser } = require('./shared-browser');
+      await SharedBrowser.restoreWindow(this.salespersonId);
 
       await this._startScreencast();
 

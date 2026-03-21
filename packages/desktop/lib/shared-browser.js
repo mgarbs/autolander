@@ -202,16 +202,24 @@ const SharedBrowser = {
     // the browser window without switching to headless mode (which FB detects).
     await this.minimizeWindow(slot.salespersonId);
 
-    // Crash recovery
+    // Crash recovery — with guard to prevent rapid relaunch loops
     slot._disconnectHandler = () => {
       console.error(`[shared-browser] Chrome DISCONNECTED for ${slot.salespersonId} (PID=${pid})`);
       slot.state = 'crashed';
       slot.browser = null;
-      // Notify all page owners their pages are dead
       slot.pages.clear();
       slot.mutex.reset();
 
-      // Auto-relaunch after delay
+      // Prevent rapid relaunch loops: max 3 relaunches per 60 seconds
+      const now = Date.now();
+      if (!slot._relaunchTimes) slot._relaunchTimes = [];
+      slot._relaunchTimes = slot._relaunchTimes.filter(t => now - t < 60000);
+      if (slot._relaunchTimes.length >= 3) {
+        console.error(`[shared-browser] Too many crashes for ${slot.salespersonId} — stopping auto-relaunch`);
+        return;
+      }
+      slot._relaunchTimes.push(now);
+
       setTimeout(async () => {
         try {
           console.log(`[shared-browser] Auto-relaunching Chrome for ${slot.salespersonId}...`);
