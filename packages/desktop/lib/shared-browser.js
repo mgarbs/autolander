@@ -363,6 +363,48 @@ const SharedBrowser = {
   },
 
   /**
+   * Restore the browser window from minimized state (needed before screencast).
+   * Also turns off alwaysOnTop on AutoLander so Chrome can be visible if needed.
+   */
+  async restoreWindow(salespersonId) {
+    const slot = slots.get(salespersonId);
+    if (!slot?.browser) return;
+
+    let cdp = null;
+    try {
+      const pages = await slot.browser.pages();
+      if (pages.length === 0) return;
+
+      cdp = await pages[0].createCDPSession();
+      const { windowId } = await cdp.send('Browser.getWindowForTarget');
+      await cdp.send('Browser.setWindowBounds', {
+        windowId,
+        bounds: { windowState: 'normal' },
+      });
+    } catch (_) {
+      // Best-effort only.
+    } finally {
+      if (cdp) {
+        await cdp.detach().catch(() => {});
+      }
+    }
+
+    // Turn off alwaysOnTop so it doesn't cover Chrome during posting
+    try {
+      const { BrowserWindow } = require('electron');
+      const wins = BrowserWindow.getAllWindows();
+      const main = wins.find(w => !w.isDestroyed() && w.isVisible());
+      if (main) {
+        main.setAlwaysOnTop(false);
+      }
+      if (this._alwaysOnTopTimer) {
+        clearTimeout(this._alwaysOnTopTimer);
+        this._alwaysOnTopTimer = null;
+      }
+    } catch (_) {}
+  },
+
+  /**
    * Kill browser and clean up for a specific user (e.g., user switch).
    */
   async teardown(salespersonId) {
