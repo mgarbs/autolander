@@ -762,7 +762,8 @@ class FacebookPoster {
       } else {
         // Strategy 4: Try keyboard navigation - type the first few chars to filter
         this.log(` Option "${targetType}" not found via click, trying keyboard...`);
-        await this.page.keyboard.type(targetType.substring(0, 3), { delay: 100 });
+        // Type enough chars to distinguish "Car/van" from "Caravan"/"Camper"
+        await this.page.keyboard.type(targetType.substring(0, 5), { delay: 100 });
         await humanDelay(1000, 1500);
         await this.page.keyboard.press('Enter');
         await humanDelay(1000, 1500);
@@ -792,20 +793,29 @@ class FacebookPoster {
       this.log(` Form fields after vehicle type selection: ${fieldCount}`);
 
       if (fieldCount <= 2) {
-        this.log(' WARNING: Vehicle type may not have been selected (only 2 fields visible). Retrying...');
-        // Retry: click dropdown again and try first available option
+        this.log(' WARNING: Vehicle type may not have been selected (only 2 fields visible). Retrying with Car/van...');
+        // Retry: click dropdown again and explicitly find "Car/van"
         await vehicleTypeDropdown.click();
         await humanDelay(2000, 3000);
         await this.page.evaluate(() => {
           const selectors = ['[role="option"]', '[role="menuitemradio"]', '[role="menuitem"]'];
           for (const sel of selectors) {
-            const first = document.querySelector(sel);
-            if (first) {
-              first.click();
-              return;
+            for (const o of document.querySelectorAll(sel)) {
+              const text = (o.textContent || '').trim().toLowerCase();
+              if (text === 'car/van' || text === 'car / van' || text.startsWith('car')) {
+                o.scrollIntoView({ block: 'center' });
+                o.click();
+                return;
+              }
             }
           }
+          // Last resort: click the first option
+          for (const sel of selectors) {
+            const first = document.querySelector(sel);
+            if (first) { first.click(); return; }
+          }
         });
+        this._selectedVehicleType = 'Car/van';
         await humanDelay(2000, 3000);
       }
     } else {
