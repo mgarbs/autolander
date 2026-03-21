@@ -72,12 +72,33 @@ class InboxPolling extends EventEmitter {
 
     pause() {
         this._paused = true;
-        console.log('[inbox-polling] Paused (posting in progress)');
+        // Stop the timers entirely — no polling, no browser activity
+        clearTimeout(this._initialTimer);
+        clearInterval(this._timer);
+        this._initialTimer = null;
+        this._timer = null;
+        this._initialPollAt = null;
+        this._intervalNextAt = null;
+        console.log('[inbox-polling] Paused — polling stopped');
     }
 
     resume() {
         this._paused = false;
-        console.log('[inbox-polling] Resumed');
+        // Restart the polling timer
+        if (!this._timer && this._active) {
+            this._timer = setInterval(() => {
+                this._intervalNextAt = Date.now() + POLL_INTERVAL_MS;
+                this._poll().catch((err) => {
+                    console.error('[inbox-polling] Poll failed:', err.message);
+                });
+            }, POLL_INTERVAL_MS);
+            this._intervalNextAt = Date.now() + POLL_INTERVAL_MS;
+            // Do an immediate poll on resume
+            this._poll().catch((err) => {
+                console.error('[inbox-polling] Resume poll failed:', err.message);
+            });
+        }
+        console.log('[inbox-polling] Resumed — polling restarted');
     }
 
     getStatus() {
