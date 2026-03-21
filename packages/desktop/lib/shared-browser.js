@@ -207,11 +207,6 @@ const SharedBrowser = {
     const pid = slot.browser.process()?.pid || null;
     console.log(`[shared-browser] Chrome launched — PID=${pid} profile=${profileDir}`);
 
-    // Minimize the Chrome window so it doesn't appear on screen (especially Mac
-    // which ignores the --window-position off-screen trick). Uses CDP to minimize
-    // the browser window without switching to headless mode (which FB detects).
-    await this.minimizeWindow(slot.salespersonId);
-
     // Crash recovery — with guard to prevent rapid relaunch loops
     slot._disconnectHandler = () => {
       console.error(`[shared-browser] Chrome DISCONNECTED for ${slot.salespersonId} (PID=${pid})`);
@@ -331,67 +326,20 @@ const SharedBrowser = {
   },
 
   /**
-   * Hide the browser window so it doesn't appear on screen.
-   *
-   * Mac:  AppleScript `set visible of process to false` — hides the app
-   *       at the OS level. Unlike CDP minimize, macOS won't un-hide it
-   *       during navigation. FB can't detect it because the browser is
-   *       still a real headed Chrome, just invisible to the user.
-   *
-   * Win/Linux: CDP minimize + off-screen position (already works fine).
+   * No-op kept for API compatibility (called by inbox-monitor._goto).
+   * Window hiding logic was removed — it caused more problems than it solved
+   * (alwaysOnTop, forced focus, Mac un-minimize battles).
+   * Chrome launches off-screen via --window-position=-32000,-32000 on Win/Linux.
    */
-  async minimizeWindow(salespersonId) {
-    const slot = slots.get(salespersonId);
-    if (!slot?.browser) return;
-
-    if (process.platform === 'darwin') {
-      // macOS: use AppleScript to hide Chrome entirely
-      try {
-        const { exec } = require('child_process');
-        exec(
-          'osascript -e \'tell application "System Events" to set visible of every process whose name contains "chrome" or name contains "Chromium" to false\'',
-          (err) => { if (err) console.warn('[shared-browser] AppleScript hide failed:', err.message); }
-        );
-      } catch (_) {}
-    } else {
-      // Windows/Linux: CDP minimize works fine
-      let cdp = null;
-      try {
-        const pages = await slot.browser.pages();
-        if (pages.length === 0) return;
-
-        cdp = await pages[0].createCDPSession();
-        const { windowId } = await cdp.send('Browser.getWindowForTarget');
-        await cdp.send('Browser.setWindowBounds', {
-          windowId,
-          bounds: { windowState: 'minimized' },
-        });
-      } catch (_) {
-      } finally {
-        if (cdp) await cdp.detach().catch(() => {});
-      }
-    }
-  },
+  async minimizeWindow(_salespersonId) {},
 
   /**
-   * Restore the browser window (needed before posting screencast).
+   * Restore the browser window for posting screencast.
    */
   async restoreWindow(salespersonId) {
     const slot = slots.get(salespersonId);
     if (!slot?.browser) return;
 
-    if (process.platform === 'darwin') {
-      // macOS: make Chrome visible again for screencast
-      try {
-        const { exec } = require('child_process');
-        exec(
-          'osascript -e \'tell application "System Events" to set visible of every process whose name contains "chrome" or name contains "Chromium" to true\'',
-          (err) => { if (err) console.warn('[shared-browser] AppleScript show failed:', err.message); }
-        );
-      } catch (_) {}
-    }
-
-    // CDP restore for all platforms (ensures window is normal state, not minimized)
     let cdp = null;
     try {
       const pages = await slot.browser.pages();
