@@ -554,6 +554,18 @@ function registerIpcHandlers(ipcMain) {
     return status;
   });
 
+  ipcMain.handle('autoresponder:pause', () => {
+    if (!inboxPolling) return { paused: false };
+    inboxPolling.pause();
+    return { paused: true };
+  });
+
+  ipcMain.handle('autoresponder:resume', () => {
+    if (!inboxPolling) return { paused: false };
+    inboxPolling.resume();
+    return { paused: false };
+  });
+
   ipcMain.handle('agent:get-config', () => {
     const Store = require('electron-store');
     const store = new Store();

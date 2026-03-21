@@ -36,6 +36,11 @@ contextBridge.exposeInMainWorld('autolander', {
     },
   },
 
+  autoresponder: {
+    pause: () => ipcRenderer.invoke('autoresponder:pause'),
+    resume: () => ipcRenderer.invoke('autoresponder:resume'),
+  },
+
   // Facebook operations
   fb: {
     login: () => ipcRenderer.invoke('fb:login'),

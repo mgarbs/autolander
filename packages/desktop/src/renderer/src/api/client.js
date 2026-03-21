@@ -355,6 +355,14 @@ export function cancelPostSession() {
   return Promise.resolve({ success: true });
 }
 
+export function pauseAutoresponder() {
+  return window.autolander?.autoresponder?.pause();
+}
+
+export function resumeAutoresponder() {
+  return window.autolander?.autoresponder?.resume();
+}
+
 // --- Dealer Config ---
 
 export function getDealerConfig() {
