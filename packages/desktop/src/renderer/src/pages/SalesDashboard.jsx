@@ -5,6 +5,7 @@ import FilterTabs from '../components/FilterTabs';
 import LeadRow from '../components/LeadRow';
 import Badge from '../components/Badge';
 import TimeAgo from '../components/TimeAgo';
+import AutoresponderToggle from '../components/AutoresponderToggle';
 import { getStats, getLeads, getPipeline, archiveConversation } from '../api/client';
 import { useRealtime } from '../context/RealtimeContext';
 import { useAgent } from '../context/AgentContext';
@@ -188,6 +189,8 @@ export default function SalesDashboard() {
                <List size={18} />
              </button>
           </div>
+
+          <AutoresponderToggle />
 
           <button
             onClick={() => { setLoading(true); refresh(); }}

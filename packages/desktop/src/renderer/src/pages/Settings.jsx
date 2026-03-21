@@ -20,10 +20,12 @@ import {
   AlertCircle,
   Mail,
   MapPin,
-  Phone
+  Phone,
+  Bot
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import Badge from '../components/Badge';
+import AutoresponderToggle from '../components/AutoresponderToggle';
 
 export default function Settings() {
   const navigate = useNavigate();
@@ -478,6 +480,32 @@ export default function Settings() {
                    <div className="text-[9px] font-bold text-surface-600 uppercase">Sales Node: <span className="text-brand-400">/sales</span></div>
                 </div>
              </div>
+          </div>
+        </div>
+      </div>
+
+      {/* AI Autoresponder */}
+      <div className="glass-card overflow-hidden">
+        <div className="p-6 border-b border-surface-900/50 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-500 shadow-glow-green">
+            <Bot size={20} />
+          </div>
+          <div>
+            <h2 className="text-sm font-black uppercase tracking-widest text-white leading-none">AI Autoresponder</h2>
+            <p className="text-[10px] text-surface-500 uppercase font-bold tracking-widest mt-1">Autonomous Customer Engagement</p>
+          </div>
+        </div>
+
+        <div className="p-6 flex flex-col md:flex-row items-center justify-between gap-6">
+          <div className="space-y-2">
+            <p className="text-xs font-bold text-surface-200 uppercase tracking-wide">Status Control</p>
+            <p className="text-[11px] text-surface-500 leading-relaxed max-w-md">
+              Enable or disable the AI agent's ability to automatically respond to new inquiries on Facebook Marketplace. 
+              When active, the agent will analyze sentiment and engage with potential buyers in real-time.
+            </p>
+          </div>
+          <div className="flex-shrink-0">
+            <AutoresponderToggle />
           </div>
         </div>
       </div>
