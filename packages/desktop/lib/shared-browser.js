@@ -331,63 +331,67 @@ const SharedBrowser = {
   },
 
   /**
-   * Re-minimize the browser window (Mac un-minimizes on navigation).
-   * Also brings AutoLander's Electron window to front so Chrome stays behind.
+   * Hide the browser window so it doesn't appear on screen.
+   *
+   * Mac:  AppleScript `set visible of process to false` — hides the app
+   *       at the OS level. Unlike CDP minimize, macOS won't un-hide it
+   *       during navigation. FB can't detect it because the browser is
+   *       still a real headed Chrome, just invisible to the user.
+   *
+   * Win/Linux: CDP minimize + off-screen position (already works fine).
    */
   async minimizeWindow(salespersonId) {
     const slot = slots.get(salespersonId);
     if (!slot?.browser) return;
 
-    let cdp = null;
-    try {
-      const pages = await slot.browser.pages();
-      if (pages.length === 0) return;
+    if (process.platform === 'darwin') {
+      // macOS: use AppleScript to hide Chrome entirely
+      try {
+        const { exec } = require('child_process');
+        exec(
+          'osascript -e \'tell application "System Events" to set visible of every process whose name contains "chrome" or name contains "Chromium" to false\'',
+          (err) => { if (err) console.warn('[shared-browser] AppleScript hide failed:', err.message); }
+        );
+      } catch (_) {}
+    } else {
+      // Windows/Linux: CDP minimize works fine
+      let cdp = null;
+      try {
+        const pages = await slot.browser.pages();
+        if (pages.length === 0) return;
 
-      cdp = await pages[0].createCDPSession();
-      const { windowId } = await cdp.send('Browser.getWindowForTarget');
-      await cdp.send('Browser.setWindowBounds', {
-        windowId,
-        bounds: { windowState: 'minimized' },
-      });
-    } catch (_) {
-      // Best-effort only.
-    } finally {
-      if (cdp) {
-        await cdp.detach().catch(() => {});
+        cdp = await pages[0].createCDPSession();
+        const { windowId } = await cdp.send('Browser.getWindowForTarget');
+        await cdp.send('Browser.setWindowBounds', {
+          windowId,
+          bounds: { windowState: 'minimized' },
+        });
+      } catch (_) {
+      } finally {
+        if (cdp) await cdp.detach().catch(() => {});
       }
-    }
-
-    // On Mac, minimized windows can pop back during navigation.
-    // Set AutoLander to alwaysOnTop while Chrome is active so it can
-    // never appear over the app — even if the user is in another app.
-    // A debounced timer turns alwaysOnTop off after 5s of no activity.
-    try {
-      const { BrowserWindow } = require('electron');
-      const wins = BrowserWindow.getAllWindows();
-      const main = wins.find(w => !w.isDestroyed() && w.isVisible());
-      if (main) {
-        main.setAlwaysOnTop(true, 'floating');
-        main.moveTop();
-        // Turn off alwaysOnTop after 5 seconds of no Chrome activity
-        if (this._alwaysOnTopTimer) clearTimeout(this._alwaysOnTopTimer);
-        this._alwaysOnTopTimer = setTimeout(() => {
-          try { main.setAlwaysOnTop(false); } catch (_) {}
-          this._alwaysOnTopTimer = null;
-        }, 5000);
-      }
-    } catch (_) {
-      // electron not available (e.g. worker context) — ignore
     }
   },
 
   /**
-   * Restore the browser window from minimized state (needed before screencast).
-   * Also turns off alwaysOnTop on AutoLander so Chrome can be visible if needed.
+   * Restore the browser window (needed before posting screencast).
    */
   async restoreWindow(salespersonId) {
     const slot = slots.get(salespersonId);
     if (!slot?.browser) return;
 
+    if (process.platform === 'darwin') {
+      // macOS: make Chrome visible again for screencast
+      try {
+        const { exec } = require('child_process');
+        exec(
+          'osascript -e \'tell application "System Events" to set visible of every process whose name contains "chrome" or name contains "Chromium" to true\'',
+          (err) => { if (err) console.warn('[shared-browser] AppleScript show failed:', err.message); }
+        );
+      } catch (_) {}
+    }
+
+    // CDP restore for all platforms (ensures window is normal state, not minimized)
     let cdp = null;
     try {
       const pages = await slot.browser.pages();
@@ -400,26 +404,9 @@ const SharedBrowser = {
         bounds: { windowState: 'normal' },
       });
     } catch (_) {
-      // Best-effort only.
     } finally {
-      if (cdp) {
-        await cdp.detach().catch(() => {});
-      }
+      if (cdp) await cdp.detach().catch(() => {});
     }
-
-    // Turn off alwaysOnTop so it doesn't cover Chrome during posting
-    try {
-      const { BrowserWindow } = require('electron');
-      const wins = BrowserWindow.getAllWindows();
-      const main = wins.find(w => !w.isDestroyed() && w.isVisible());
-      if (main) {
-        main.setAlwaysOnTop(false);
-      }
-      if (this._alwaysOnTopTimer) {
-        clearTimeout(this._alwaysOnTopTimer);
-        this._alwaysOnTopTimer = null;
-      }
-    } catch (_) {}
   },
 
   /**
