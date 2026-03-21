@@ -433,6 +433,11 @@ function pauseInboxPollingForAssistedPost() {
 
 function resumeInboxPollingAfterAssistedPost() {
   if (!inboxPolling) return;
+  // Don't resume if the user explicitly paused via the toggle
+  if (inboxPolling._userPaused) {
+    console.log('[ipc] Post complete but autoresponder is user-paused, not resuming');
+    return;
+  }
   inboxPolling.resume();
   if (agentClient) sendAgentStatus(agentClient.getStatus());
 }
@@ -556,12 +561,14 @@ function registerIpcHandlers(ipcMain) {
 
   ipcMain.handle('autoresponder:pause', () => {
     if (!inboxPolling) return { paused: false };
+    inboxPolling._userPaused = true;
     inboxPolling.pause();
     return { paused: true };
   });
 
   ipcMain.handle('autoresponder:resume', () => {
     if (!inboxPolling) return { paused: false };
+    inboxPolling._userPaused = false;
     inboxPolling.resume();
     return { paused: false };
   });
