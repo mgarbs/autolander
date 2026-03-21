@@ -161,6 +161,16 @@ const SharedBrowser = {
     ensureDirs();
     slot.state = 'launching';
 
+    // Kill any existing browser for this slot before launching a new one
+    if (slot.browser) {
+      try {
+        slot.browser.removeAllListeners('disconnected');
+        await slot.browser.close();
+      } catch (_) {}
+      slot.browser = null;
+      slot.pages.clear();
+    }
+
     const profileDir = sharedChromeProfileDir(slot.salespersonId);
     slot.profileDir = profileDir;
 
