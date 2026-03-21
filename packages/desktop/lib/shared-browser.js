@@ -314,6 +314,7 @@ const SharedBrowser = {
 
   /**
    * Re-minimize the browser window (Mac un-minimizes on navigation).
+   * Also brings AutoLander's Electron window to front so Chrome stays behind.
    */
   async minimizeWindow(salespersonId) {
     const slot = slots.get(salespersonId);
@@ -336,6 +337,19 @@ const SharedBrowser = {
       if (cdp) {
         await cdp.detach().catch(() => {});
       }
+    }
+
+    // On Mac, minimized windows can pop back. As a fallback, bring the
+    // AutoLander Electron window to front so Chrome stays behind it.
+    try {
+      const { BrowserWindow } = require('electron');
+      const wins = BrowserWindow.getAllWindows();
+      const main = wins.find(w => !w.isDestroyed() && w.isVisible());
+      if (main) {
+        main.moveTop();
+      }
+    } catch (_) {
+      // electron not available (e.g. worker context) — ignore
     }
   },
 

@@ -80,6 +80,11 @@ module.exports = function createConversationsRouter(prisma) {
           console.log(`[auto-reply] Cooldown: conv ${convId} replied ${Math.round(elapsed / 1000)}s ago, skipping`);
           return;
         }
+        // Skip if a SENDING/SENT reply exists within the last 60s (desktop /respond path handled it)
+        if (['SENDING', 'SENT'].includes(lastAutoReply.status) && elapsed < 60000) {
+          console.log(`[auto-reply] Skipping conv ${convId} - recent ${lastAutoReply.status} reply exists (${Math.round(elapsed / 1000)}s ago)`);
+          return;
+        }
       }
 
       const allMessages = await prisma.message.findMany({
@@ -449,7 +454,7 @@ module.exports = function createConversationsRouter(prisma) {
     const orgId = req.orgId;
     const userId = req.user?.id || req.user?.sub;
     const threadId = req.params.threadId;
-    const { buyerName, listingTitle, messages: scrapedMessages } = req.body;
+    const { buyerName, listingTitle, lastBuyerMessageText, messages: scrapedMessages } = req.body;
 
     if (!Array.isArray(scrapedMessages) || scrapedMessages.length === 0) {
       return res.json({ reply: null });
@@ -560,7 +565,7 @@ module.exports = function createConversationsRouter(prisma) {
     });
     if (lastAutoReply) {
       const elapsed = Date.now() - lastAutoReply.createdAt.getTime();
-      if (elapsed < 5 * 60 * 1000) {
+      if (elapsed < 30000) {
         return res.json({ reply: null, reason: 'cooldown' });
       }
     }
@@ -670,7 +675,7 @@ module.exports = function createConversationsRouter(prisma) {
           direction: 'OUTBOUND',
           text: replyText,
           intent: 'auto_reply',
-          status: 'PENDING',
+          status: 'SENDING',  // Desktop will send directly; sweep ignores SENDING
           attempts: 1,
         },
       });

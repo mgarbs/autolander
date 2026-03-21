@@ -112,13 +112,23 @@ const { Commands } = require('@autolander/shared/protocol');
 
 setInterval(async () => {
   try {
-    // Find PENDING outbound messages older than 30 seconds, max 3 attempts
+    // Rescue stale SENDING messages: desktop didn't confirm within 2 minutes
+    await prisma.message.updateMany({
+      where: {
+        direction: 'OUTBOUND',
+        status: 'SENDING',
+        createdAt: { lt: new Date(Date.now() - 120000) },
+      },
+      data: { status: 'PENDING', attempts: 0 },
+    });
+
+    // Find PENDING outbound messages older than 60 seconds, max 3 attempts
     const pendingMessages = await prisma.message.findMany({
       where: {
         direction: 'OUTBOUND',
         status: 'PENDING',
         attempts: { lt: 3 },
-        createdAt: { lt: new Date(Date.now() - 30000) },
+        createdAt: { lt: new Date(Date.now() - 60000) },
       },
       include: {
         conversation: {

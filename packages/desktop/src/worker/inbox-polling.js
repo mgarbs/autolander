@@ -21,6 +21,9 @@ class InboxPolling extends EventEmitter {
         this._messagesForwarded = 0;
         this.serverUrl = null;
         this.accessToken = null;
+        // Track which buyer messages we've already responded to (GraphQL validation)
+        // Key: threadId, Value: { fingerprint, respondedAt }
+        this._respondedTo = new Map();
     }
 
     start(fbInboxAdapter, { serverUrl, accessToken } = {}) {
@@ -107,7 +110,8 @@ class InboxPolling extends EventEmitter {
             const result = await this.fbInboxAdapter.checkInbox();
             const threads = this._extractThreads(result);
 
-            // Collect threads that need replies (buyer spoke last)
+            // Collect threads that need replies (buyer spoke last),
+            // validated against GraphQL data to prevent duplicates.
             const needsReply = [];
             for (const thread of threads) {
                 const threadId = thread?.threadId || thread?.id;
@@ -122,7 +126,27 @@ class InboxPolling extends EventEmitter {
                     continue;
                 }
 
+                // GraphQL validation: fingerprint is the buyer's last message text only.
+                // We don't include message count since our own replies or system messages
+                // changing the count shouldn't trigger a new response.
+                const lastBuyerText = (lastMsg.text || lastMsg.body || lastMsg.message || '').trim();
+                const fingerprint = lastBuyerText.substring(0, 100);
+                const prior = this._respondedTo.get(threadId);
+
+                if (prior && prior.fingerprint === fingerprint) {
+                    console.log(`[inbox-polling] ${thread.buyerName}: already responded to this state, skipping`);
+                    continue;
+                }
+
+                thread._lastBuyerText = lastBuyerText;
+                thread._fingerprint = fingerprint;
                 needsReply.push(thread);
+            }
+
+            // Purge stale _respondedTo entries (older than 24h)
+            const staleThreshold = Date.now() - 24 * 60 * 60 * 1000;
+            for (const [tid, entry] of this._respondedTo) {
+                if (entry.respondedAt < staleThreshold) this._respondedTo.delete(tid);
             }
 
             // Get responses from cloud for all threads that need replies
@@ -147,6 +171,12 @@ class InboxPolling extends EventEmitter {
                         );
                         console.log(`[inbox-polling] ${thread.buyerName}: reply sent to FB`);
                         this._messagesForwarded += 1;
+
+                        // Record that we responded to this conversation state
+                        this._respondedTo.set(threadId, {
+                            fingerprint: thread._fingerprint,
+                            respondedAt: Date.now(),
+                        });
 
                         if (response.messageId) {
                             await this._confirmSent(response.messageId);
@@ -183,6 +213,7 @@ class InboxPolling extends EventEmitter {
         const body = {
             buyerName: thread.buyerName || '',
             listingTitle: thread.listingTitle || '',
+            lastBuyerMessageText: (thread._lastBuyerText || '').substring(0, 200),
             messages: messages.map(m => ({
                 text: m.text || m.body || m.message || '',
                 isBuyer: Boolean(m.isBuyer),
