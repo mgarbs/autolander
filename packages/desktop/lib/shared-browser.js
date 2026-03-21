@@ -339,14 +339,23 @@ const SharedBrowser = {
       }
     }
 
-    // On Mac, minimized windows can pop back. As a fallback, bring the
-    // AutoLander Electron window to front so Chrome stays behind it.
+    // On Mac, minimized windows can pop back during navigation.
+    // Set AutoLander to alwaysOnTop while Chrome is active so it can
+    // never appear over the app — even if the user is in another app.
+    // A debounced timer turns alwaysOnTop off after 5s of no activity.
     try {
       const { BrowserWindow } = require('electron');
       const wins = BrowserWindow.getAllWindows();
       const main = wins.find(w => !w.isDestroyed() && w.isVisible());
       if (main) {
+        main.setAlwaysOnTop(true, 'floating');
         main.moveTop();
+        // Turn off alwaysOnTop after 5 seconds of no Chrome activity
+        if (this._alwaysOnTopTimer) clearTimeout(this._alwaysOnTopTimer);
+        this._alwaysOnTopTimer = setTimeout(() => {
+          try { main.setAlwaysOnTop(false); } catch (_) {}
+          this._alwaysOnTopTimer = null;
+        }, 5000);
       }
     } catch (_) {
       // electron not available (e.g. worker context) — ignore
