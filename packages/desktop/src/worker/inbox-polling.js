@@ -162,13 +162,31 @@ class InboxPolling extends EventEmitter {
                         // For the last thread opened by checkInbox, the chat is still
                         // visible — skip re-navigation. For others, navigate to inbox first.
                         const skipNav = Boolean(thread._isOpen);
-                        await this.fbInboxAdapter.sendMessage(
+                        const sendResult = await this.fbInboxAdapter.sendMessage(
                             threadId,
                             response.reply,
                             thread.buyerName,
                             thread.listingTitle,
                             { skipNavigation: skipNav, realThreadId: thread.realThreadId || thread._realFbId }
                         );
+
+                        // Check the actual result — sendMessage returns { sent: boolean }
+                        if (sendResult && sendResult.sent === false) {
+                            console.error(`[inbox-polling] ${thread.buyerName}: sendMessage returned sent=false, retrying...`);
+                            // Retry once with full navigation
+                            const retry = await this.fbInboxAdapter.sendMessage(
+                                threadId,
+                                response.reply,
+                                thread.buyerName,
+                                thread.listingTitle,
+                                { skipNavigation: false, realThreadId: thread.realThreadId || thread._realFbId }
+                            );
+                            if (!retry || retry.sent === false) {
+                                console.error(`[inbox-polling] ${thread.buyerName}: retry also failed, skipping`);
+                                continue;
+                            }
+                        }
+
                         console.log(`[inbox-polling] ${thread.buyerName}: reply sent to FB`);
                         this._messagesForwarded += 1;
 
@@ -178,8 +196,7 @@ class InboxPolling extends EventEmitter {
                             respondedAt: Date.now(),
                         });
 
-                        // Save the message to DB only AFTER FB send succeeded.
-                        // This ensures the DB only contains messages the buyer actually received.
+                        // Save the message to DB only AFTER FB send confirmed.
                         await this._saveSent(response.conversationId, response.reply);
                     } catch (err) {
                         console.error(`[inbox-polling] ${thread.buyerName}: send failed: ${err.message}`);
