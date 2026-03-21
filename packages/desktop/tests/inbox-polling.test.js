@@ -3,12 +3,12 @@
 const { InboxPolling } = require('../src/worker/inbox-polling');
 
 describe('InboxPolling._poll()', () => {
-  test('calls checkInbox and requests response from cloud via /respond', async () => {
+  test('sends reply to FB then saves to DB (not before)', async () => {
     const fakeThread = {
       threadId: 'thread-1',
       buyerName: 'Alice',
       listingTitle: '2020 Civic',
-      messages: [{ text: 'Is this available?', isBuyer: true }],
+      messages: [{ text: 'Is this available?', isBuyer: true, timestamp: '1711000000000' }],
     };
 
     const mockAdapter = {
@@ -20,40 +20,80 @@ describe('InboxPolling._poll()', () => {
     poller.serverUrl = 'http://localhost:3000';
     poller.accessToken = 'test-token';
 
-    // Mock global fetch — /respond returns a reply, /confirm-sent returns ok
-    global.fetch = jest.fn().mockImplementation((url) => {
+    const fetchCalls = [];
+    global.fetch = jest.fn().mockImplementation((url, opts) => {
+      fetchCalls.push({ url, method: opts?.method });
       if (url.includes('/respond')) {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve({ reply: 'Yes it is!', messageId: 'msg-1' }),
+          json: () => Promise.resolve({ reply: 'Yes it is!', conversationId: 'conv-1' }),
         });
       }
-      // confirm-sent
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true }) });
+      // save-sent via POST /messages
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: 'msg-1' }) });
     });
 
     await poller._poll();
 
     expect(mockAdapter.checkInbox).toHaveBeenCalledTimes(1);
 
-    // First fetch call should be to /respond
-    const [url, opts] = global.fetch.mock.calls[0];
-    expect(url).toContain('/api/conversations/thread-1/respond');
-    expect(opts.method).toBe('POST');
-    expect(opts.headers['Authorization']).toBe('Bearer test-token');
-
-    const body = JSON.parse(opts.body);
+    // First fetch: /respond
+    expect(fetchCalls[0].url).toContain('/api/conversations/thread-1/respond');
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
     expect(body.buyerName).toBe('Alice');
     expect(body.lastBuyerMessageText).toBe('Is this available?');
-    expect(body.messages).toHaveLength(1);
-    expect(body.messages[0].text).toBe('Is this available?');
+    expect(body.messages[0].timestamp).toBe('1711000000000');
 
-    // Should have sent the reply to FB
+    // FB send happened
     expect(mockAdapter.sendMessage).toHaveBeenCalledTimes(1);
 
-    // Second fetch should be confirm-sent
-    expect(global.fetch).toHaveBeenCalledTimes(2);
-    expect(global.fetch.mock.calls[1][0]).toContain('/confirm-sent');
+    // Second fetch: save-sent via POST /messages (AFTER FB send)
+    expect(fetchCalls[1].url).toContain('/messages');
+    expect(fetchCalls[1].method).toBe('POST');
+    const saveBody = JSON.parse(global.fetch.mock.calls[1][1].body);
+    expect(saveBody.direction).toBe('OUTBOUND');
+    expect(saveBody.text).toBe('Yes it is!');
+    expect(saveBody.intent).toBe('auto_reply');
+    expect(saveBody.status).toBe('SENT');
+  });
+
+  test('does NOT save to DB when FB send fails', async () => {
+    const fakeThread = {
+      threadId: 'thread-1',
+      buyerName: 'Alice',
+      messages: [{ text: 'Is this available?', isBuyer: true }],
+    };
+
+    const mockAdapter = {
+      checkInbox: jest.fn().mockResolvedValue([fakeThread]),
+      sendMessage: jest.fn().mockRejectedValue(new Error('Chrome crashed')),
+    };
+
+    const poller = new InboxPolling({ fbInboxAdapter: mockAdapter });
+    poller.serverUrl = 'http://localhost:3000';
+    poller.accessToken = 'test-token';
+
+    global.fetch = jest.fn().mockImplementation((url) => {
+      if (url.includes('/respond')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ reply: 'Yes!', conversationId: 'conv-1' }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await poller._poll();
+
+    // /respond was called
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch.mock.calls[0][0]).toContain('/respond');
+
+    // FB send was attempted but failed
+    expect(mockAdapter.sendMessage).toHaveBeenCalledTimes(1);
+
+    // No save-sent call — message not saved to DB
+    expect(global.fetch).toHaveBeenCalledTimes(1); // only /respond, no /messages
   });
 
   test('skips thread if already responded to same conversation state', async () => {
@@ -77,10 +117,10 @@ describe('InboxPolling._poll()', () => {
       if (url.includes('/respond')) {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve({ reply: 'Yes!', messageId: 'msg-1' }),
+          json: () => Promise.resolve({ reply: 'Yes!', conversationId: 'conv-1' }),
         });
       }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true }) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
     });
 
     // First poll — should respond
@@ -112,10 +152,10 @@ describe('InboxPolling._poll()', () => {
       if (url.includes('/respond')) {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve({ reply: 'Response!', messageId: 'msg-1' }),
+          json: () => Promise.resolve({ reply: 'Response!', conversationId: 'conv-1' }),
         });
       }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true }) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
     });
 
     // First poll with one message

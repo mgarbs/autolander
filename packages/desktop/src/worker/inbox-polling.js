@@ -178,9 +178,9 @@ class InboxPolling extends EventEmitter {
                             respondedAt: Date.now(),
                         });
 
-                        if (response.messageId) {
-                            await this._confirmSent(response.messageId);
-                        }
+                        // Save the message to DB only AFTER FB send succeeded.
+                        // This ensures the DB only contains messages the buyer actually received.
+                        await this._saveSent(response.conversationId, response.reply);
                     } catch (err) {
                         console.error(`[inbox-polling] ${thread.buyerName}: send failed: ${err.message}`);
                     }
@@ -217,6 +217,7 @@ class InboxPolling extends EventEmitter {
             messages: messages.map(m => ({
                 text: m.text || m.body || m.message || '',
                 isBuyer: Boolean(m.isBuyer),
+                timestamp: m.timestamp || '',
             })).filter(m => m.text.trim()),
         };
 
@@ -239,7 +240,7 @@ class InboxPolling extends EventEmitter {
 
             const result = await response.json();
             if (result.reply) {
-                return { reply: result.reply, messageId: result.messageId };
+                return { reply: result.reply, conversationId: result.conversationId };
             }
             if (result.reason) {
                 console.log(`[inbox-polling] ${thread.buyerName}: no reply (${result.reason})`);
@@ -251,23 +252,29 @@ class InboxPolling extends EventEmitter {
         }
     }
 
-    async _confirmSent(messageId) {
-        if (!this.serverUrl || !this.accessToken || !messageId) return;
+    async _saveSent(conversationId, text) {
+        if (!this.serverUrl || !this.accessToken || !conversationId || !text) return;
         try {
             const endpoint = new URL(
-                `/api/conversations/messages/${encodeURIComponent(messageId)}/confirm-sent`,
+                `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
                 this.serverUrl
             ).toString();
             await fetch(endpoint, {
-                method: 'PUT',
+                method: 'POST',
                 headers: {
                     Authorization: `Bearer ${this.accessToken}`,
                     'Content-Type': 'application/json',
                 },
+                body: JSON.stringify({
+                    direction: 'OUTBOUND',
+                    text,
+                    intent: 'auto_reply',
+                    status: 'SENT',
+                }),
             });
-            console.log(`[inbox-polling] Confirmed delivery: ${messageId}`);
+            console.log(`[inbox-polling] Saved sent message for conv ${conversationId}`);
         } catch (err) {
-            console.error(`[inbox-polling] Failed to confirm delivery: ${err.message}`);
+            console.error(`[inbox-polling] Failed to save sent message: ${err.message}`);
         }
     }
 

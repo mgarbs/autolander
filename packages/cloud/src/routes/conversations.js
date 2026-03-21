@@ -639,8 +639,11 @@ module.exports = function createConversationsRouter(prisma) {
       replyText = truncated;
     }
 
-    // Save ALL scraped messages to DB for UI display (buyer AND ours)
-    for (const m of scrapedMessages) {
+    // Save ALL scraped messages to DB for UI display (buyer AND ours).
+    // Use timestamps from GraphQL to preserve original conversation order.
+    const baseTime = Date.now() - scrapedMessages.length * 1000;
+    for (let i = 0; i < scrapedMessages.length; i++) {
+      const m = scrapedMessages[i];
       let text = (m.text || '').trim();
       if (!text) continue;
       text = text.replace(/^[A-Z][a-z]+\n/, '').trim();
@@ -650,36 +653,23 @@ module.exports = function createConversationsRouter(prisma) {
         where: { conversationId: conv.id, direction, text },
       });
       if (!existing) {
+        // Use GraphQL timestamp if available, otherwise assign sequential timestamps
+        const ts = m.timestamp ? parseInt(m.timestamp, 10) : 0;
+        const createdAt = ts > 1000000000000
+          ? new Date(ts)              // millisecond timestamp
+          : ts > 1000000000
+            ? new Date(ts * 1000)     // second timestamp
+            : new Date(baseTime + i * 1000);  // fallback: sequential
         await prisma.message.create({
-          data: { conversationId: conv.id, direction, text, status: 'SENT' },
+          data: { conversationId: conv.id, direction, text, status: 'SENT', createdAt },
         });
       }
     }
 
-    let outMsg = null;
+    // Don't save the auto-reply to DB here. The desktop will save it
+    // ONLY after successfully sending to Facebook. This ensures the DB
+    // only contains messages the buyer actually received.
     if (replyText) {
-
-      // Delete any old FAILED/PENDING auto_reply so we don't accumulate duplicates
-      await prisma.message.deleteMany({
-        where: {
-          conversationId: conv.id,
-          direction: 'OUTBOUND',
-          intent: 'auto_reply',
-          status: { in: ['FAILED', 'PENDING'] },
-        },
-      });
-
-      outMsg = await prisma.message.create({
-        data: {
-          conversationId: conv.id,
-          direction: 'OUTBOUND',
-          text: replyText,
-          intent: 'auto_reply',
-          status: 'SENDING',  // Desktop will send directly; sweep ignores SENDING
-          attempts: 1,
-        },
-      });
-
       const newState = conv.state === 'NEW' ? 'ENGAGED' : conv.state;
       await prisma.conversation.update({
         where: { id: conv.id },
@@ -687,27 +677,8 @@ module.exports = function createConversationsRouter(prisma) {
       });
     }
 
-    const freshMessages = await prisma.message.findMany({
-      where: { conversationId: conv.id },
-      orderBy: { createdAt: 'asc' },
-      take: 20,
-    });
-    const scoreResult = await aiService.scoreLeadAI(conv, freshMessages, { orgId });
-    await prisma.conversation.update({
-      where: { id: conv.id },
-      data: { leadScore: scoreResult.score, sentimentScore: scoreResult.score },
-    });
-
-    const clientGateway = req.app.get('clientGateway');
-    if (clientGateway) {
-      clientGateway.broadcast(orgId, {
-        type: 'lead:updated',
-        data: { buyerId: conv.id, conversationId: conv.id },
-      });
-    }
-
-    console.log(`[respond] ${buyerName}: "${replyText?.slice(0, 60)}..." score=${scoreResult.score}`);
-    res.json({ reply: replyText || null, conversationId: conv.id, messageId: outMsg?.id || null });
+    console.log(`[respond] ${buyerName}: "${replyText?.slice(0, 60)}..."`);
+    res.json({ reply: replyText || null, conversationId: conv.id });
   });
 
   router.put('/messages/:messageId/confirm-sent', async (req, res) => {
@@ -884,7 +855,7 @@ module.exports = function createConversationsRouter(prisma) {
           );
           if (isEcho) continue;
 
-          newMessages.push({ text: scrapedText, direction: scrapedDir });
+          newMessages.push({ text: scrapedText, direction: scrapedDir, timestamp: scraped.timestamp || '' });
         }
       }
     } else {
@@ -933,19 +904,29 @@ module.exports = function createConversationsRouter(prisma) {
         }
 
         console.log(`[sync-debug] NEW: "${scrapedText.slice(0,60)}"`);
-        newMessages.push({ text: scrapedText, direction: 'INBOUND' });
+        newMessages.push({ text: scrapedText, direction: 'INBOUND', timestamp: scraped.timestamp || '' });
         // Add to set so we don't double-add within the same batch
         existingInbound.add(scrapedText.toLowerCase());
       }
     }
 
     let newInboundCount = 0;
-    for (const msg of newMessages) {
+    const syncBaseTime = Date.now() - newMessages.length * 1000;
+    for (let i = 0; i < newMessages.length; i++) {
+      const msg = newMessages[i];
+      // Use GraphQL timestamp if available, otherwise assign sequential timestamps
+      const ts = msg.timestamp ? parseInt(msg.timestamp, 10) : 0;
+      const createdAt = ts > 1000000000000
+        ? new Date(ts)              // millisecond timestamp
+        : ts > 1000000000
+          ? new Date(ts * 1000)     // second timestamp
+          : new Date(syncBaseTime + i * 1000);  // fallback: sequential
       await prisma.message.create({
         data: {
           conversationId: conv.id,
           direction: msg.direction,
           text: msg.text,
+          createdAt,
         },
       });
       if (msg.direction === 'INBOUND' && !isFirstSync) newInboundCount++;
