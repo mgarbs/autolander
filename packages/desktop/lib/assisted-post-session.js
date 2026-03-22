@@ -667,6 +667,7 @@ class AssistedPostSession {
 
         if (this._isEditMode()) {
           if (this.status === 'awaiting_publish' && this._isEditSuccess(pageState)) {
+            if (this.poster) await this.poster.saveSession().catch(() => {});
             this._setStatus('success', 'Listing updated successfully!', this._buildSuccessDetail(pageState));
             this._clearTimers();
           }
@@ -697,6 +698,7 @@ class AssistedPostSession {
               // Timeout — use whatever URL we have
               this.log('URL did not settle to /item/ — using current URL');
             }
+            if (this.poster) await this.poster.saveSession().catch(() => {});
             this._setStatus('success', 'Listing published successfully!', this._buildSuccessDetail(pageState));
             this._clearTimers();
           }
@@ -755,6 +757,10 @@ class AssistedPostSession {
     }
 
     if (this.poster) {
+      // Save session cookies BEFORE closing — preserves the FB login
+      // for the next post. Without this, cookies are lost and the user
+      // gets "Not logged into Facebook" on the next attempt.
+      this.poster.saveSession().catch(() => {});
       this.poster.close().catch(() => {});
       this.poster = null;
     }
