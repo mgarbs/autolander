@@ -248,6 +248,27 @@ async function collectFeedHtml(win, label) {
 
 async function detectFeedPageCount(win) {
   try {
+    // First try: calculate from total count (most reliable)
+    // Cars.com shows "X matches" and displays 24 per page
+    const totalCount = await win.webContents.executeJavaScript(`
+      (function() {
+        // Look for "X matches" or "X results" text
+        var text = document.body.innerText || '';
+        var m = text.match(/(\\d+)\\s*match/i) || text.match(/(\\d+)\\s*result/i);
+        if (m) return parseInt(m[1], 10);
+        // Try data attributes
+        var el = document.querySelector('[data-total-count]');
+        if (el) return parseInt(el.getAttribute('data-total-count'), 10);
+        return 0;
+      })()
+    `);
+    if (totalCount > 24) {
+      const pages = Math.ceil(totalCount / 24);
+      console.log('[feed:fetch-html] Calculated page count from total:', totalCount, '→', pages, 'pages');
+      return Math.min(pages, FEED_FETCH_MAX_PAGES);
+    }
+
+    // Fallback: detect from pagination DOM elements
     const pageCount = await win.webContents.executeJavaScript(FEED_FETCH_PAGINATION_JS);
     const parsed = Number.parseInt(String(pageCount), 10);
     if (!Number.isFinite(parsed) || parsed < 2) return 1;
