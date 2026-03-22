@@ -176,68 +176,78 @@ function upgradeSize(src) {
 /**
  * Extract photo URLs from vehicle detail page HTML.
  *
- * Searches multiple sources:
- *   1. <img> tags with src, data-src, data-original, data-lazy-src
- *   2. <source srcset> elements (responsive images)
- *   3. JSON-LD structured data (schema.org Vehicle/Product images)
- *   4. Open Graph meta tags (og:image)
+ * Priority order (use the FIRST source that yields photos):
+ *   1. JSON-LD structured data — contains only the vehicle's gallery photos
+ *   2. <img> tags — fallback, but picks up "similar vehicles" section too
  *
- * Supports both Cars.com (cstatic-images.com) and generic dealer sites.
+ * Cars.com detail pages have 10-20 gallery photos plus 20+ thumbnails from
+ * "Similar Vehicles" and recommendation sections. JSON-LD only contains the
+ * real gallery, so we prefer it and skip <img> scraping when it works.
+ *
+ * Capped at 20 photos (FB Marketplace max).
  */
 function extractPhotos(html) {
+  const MAX_PHOTOS = 20;
   const $ = cheerio.load(html);
-  const urls = [];
   const seen = new Set();
 
-  function add(src) {
-    if (!src || !isVehiclePhoto(src)) return;
+  function collect(src) {
+    if (!src || !isVehiclePhoto(src)) return null;
     const upgraded = upgradeSize(src.trim());
-    if (!upgraded || seen.has(upgraded)) return;
+    if (!upgraded || seen.has(upgraded)) return null;
     seen.add(upgraded);
-    urls.push(upgraded);
+    return upgraded;
   }
 
-  // 1. <img> tags — check multiple attributes for lazy-loaded images
-  $('img').each((_, el) => {
-    const node = $(el);
-    add(node.attr('src'));
-    add(node.attr('data-src'));
-    add(node.attr('data-original'));
-    add(node.attr('data-lazy-src'));
-    add(node.attr('data-hi-res-src'));
-  });
-
-  // 2. <source srcset> — responsive image sets
-  $('source[srcset]').each((_, el) => {
-    const srcset = $(el).attr('srcset') || '';
-    for (const part of srcset.split(',')) {
-      const src = part.trim().split(/\s+/)[0];
-      add(src);
-    }
-  });
-
-  // 3. JSON-LD structured data
+  // 1. JSON-LD structured data — preferred source (gallery photos only)
+  const jsonLdPhotos = [];
   $('script[type="application/ld+json"]').each((_, el) => {
     try {
       const data = JSON.parse($(el).contents().text());
       const images = Array.isArray(data.image) ? data.image : data.image ? [data.image] : [];
       for (const img of images) {
-        add(typeof img === 'string' ? img : img?.url || img?.contentUrl);
+        const url = collect(typeof img === 'string' ? img : img?.url || img?.contentUrl);
+        if (url) jsonLdPhotos.push(url);
       }
     } catch {}
   });
 
-  // 4. Open Graph meta (og:image)
-  $('meta[property="og:image"]').each((_, el) => {
-    add($(el).attr('content'));
+  // Filter to cstatic vehicle photos
+  const jsonLdVehicle = jsonLdPhotos.filter(u => u.includes('cstatic-images.com') && u.includes('/in/v2/'));
+  if (jsonLdVehicle.length > 0) {
+    return jsonLdVehicle.slice(0, MAX_PHOTOS);
+  }
+  if (jsonLdPhotos.length > 0) {
+    return jsonLdPhotos.slice(0, MAX_PHOTOS);
+  }
+
+  // 2. Fallback: <img> tags + <source srcset> + og:image
+  const imgPhotos = [];
+
+  $('img').each((_, el) => {
+    const node = $(el);
+    for (const attr of ['src', 'data-src', 'data-original', 'data-lazy-src', 'data-hi-res-src']) {
+      const url = collect(node.attr(attr));
+      if (url) imgPhotos.push(url);
+    }
   });
 
-  // For Cars.com, only keep vehicle photo URLs from cstatic-images.com.
-  // Real vehicle photos match: platform.cstatic-images.com/{size}/in/v2/{uuid}/{uuid}
-  const vehiclePhotoUrls = urls.filter((u) =>
-    u.includes('cstatic-images.com') && u.includes('/in/v2/')
-  );
-  return vehiclePhotoUrls.length > 0 ? vehiclePhotoUrls : urls;
+  $('source[srcset]').each((_, el) => {
+    const srcset = $(el).attr('srcset') || '';
+    for (const part of srcset.split(',')) {
+      const url = collect(part.trim().split(/\s+/)[0]);
+      if (url) imgPhotos.push(url);
+    }
+  });
+
+  $('meta[property="og:image"]').each((_, el) => {
+    const url = collect($(el).attr('content'));
+    if (url) imgPhotos.push(url);
+  });
+
+  const vehiclePhotos = imgPhotos.filter(u => u.includes('cstatic-images.com') && u.includes('/in/v2/'));
+  const result = vehiclePhotos.length > 0 ? vehiclePhotos : imgPhotos;
+  return result.slice(0, MAX_PHOTOS);
 }
 
 function isNetworkError(error) {

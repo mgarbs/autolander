@@ -146,55 +146,66 @@ function isVehiclePhoto(src) {
  * Extract photo URLs from detail page HTML using cheerio.
  */
 function extractPhotos(html) {
+  const MAX_PHOTOS = 20;
   const $ = cheerio.load(html);
-  const urls = [];
   const seen = new Set();
 
-  function add(src) {
-    if (!src) return;
-    if (!src.includes('cstatic-images.com')) return;
-    if (!src.includes('/in/v2/')) return;
-    if (!isVehiclePhoto(src)) return;
+  function collect(src) {
+    if (!src) return null;
+    if (!src.includes('cstatic-images.com')) return null;
+    if (!src.includes('/in/v2/')) return null;
+    if (!isVehiclePhoto(src)) return null;
     const upgraded = src.replace(
       /\/(?:small|medium|large|xlarge)\/in\/v2\//i,
       '/xxlarge/in/v2/'
     );
-    if (seen.has(upgraded)) return;
+    if (seen.has(upgraded)) return null;
     seen.add(upgraded);
-    urls.push(upgraded);
+    return upgraded;
   }
 
-  $('img').each((_, el) => {
-    const node = $(el);
-    add(node.attr('src'));
-    add(node.attr('data-src'));
-    add(node.attr('data-original'));
-    add(node.attr('data-lazy-src'));
-    add(node.attr('data-hi-res-src'));
-  });
-
-  $('source[srcset]').each((_, el) => {
-    const srcset = $(el).attr('srcset') || '';
-    for (const part of srcset.split(',')) {
-      add(part.trim().split(/\s+/)[0]);
-    }
-  });
-
+  // 1. JSON-LD — preferred source (gallery photos only, no "similar vehicles")
+  const jsonLdPhotos = [];
   $('script[type="application/ld+json"]').each((_, el) => {
     try {
       const data = JSON.parse($(el).contents().text());
       const images = Array.isArray(data.image) ? data.image : data.image ? [data.image] : [];
       for (const img of images) {
-        add(typeof img === 'string' ? img : img?.url || img?.contentUrl);
+        const url = collect(typeof img === 'string' ? img : img?.url || img?.contentUrl);
+        if (url) jsonLdPhotos.push(url);
       }
     } catch {}
   });
 
-  $('meta[property="og:image"]').each((_, el) => {
-    add($(el).attr('content'));
+  if (jsonLdPhotos.length > 0) {
+    return jsonLdPhotos.slice(0, MAX_PHOTOS);
+  }
+
+  // 2. Fallback: <img> tags + srcset + og:image
+  const imgPhotos = [];
+
+  $('img').each((_, el) => {
+    const node = $(el);
+    for (const attr of ['src', 'data-src', 'data-original', 'data-lazy-src', 'data-hi-res-src']) {
+      const url = collect(node.attr(attr));
+      if (url) imgPhotos.push(url);
+    }
   });
 
-  return urls;
+  $('source[srcset]').each((_, el) => {
+    const srcset = $(el).attr('srcset') || '';
+    for (const part of srcset.split(',')) {
+      const url = collect(part.trim().split(/\s+/)[0]);
+      if (url) imgPhotos.push(url);
+    }
+  });
+
+  $('meta[property="og:image"]').each((_, el) => {
+    const url = collect($(el).attr('content'));
+    if (url) imgPhotos.push(url);
+  });
+
+  return imgPhotos.slice(0, MAX_PHOTOS);
 }
 
 function isNetworkError(error) {
