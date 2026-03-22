@@ -683,6 +683,20 @@ class AssistedPostSession {
             this.status === 'awaiting_publish'
             && (pageState.url.includes('/item/') || pageState.url.includes('/marketplace/you/'))
           ) {
+            // Wait for URL to settle to /item/{id} so we capture the permanent listing URL.
+            // FB redirects through /marketplace/you/ first, then to /item/{id} after a few seconds.
+            if (!pageState.url.includes('/item/')) {
+              if (!this._waitingForFinalUrl) {
+                this._waitingForFinalUrl = Date.now();
+                this.log('Waiting for final listing URL to settle...');
+              }
+              // Give FB up to 15 seconds to redirect to /item/{id}
+              if (Date.now() - this._waitingForFinalUrl < 15000) {
+                return; // Keep polling
+              }
+              // Timeout — use whatever URL we have
+              this.log('URL did not settle to /item/ — using current URL');
+            }
             this._setStatus('success', 'Listing published successfully!', this._buildSuccessDetail(pageState));
             this._clearTimers();
           }

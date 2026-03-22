@@ -270,7 +270,7 @@ server.listen(PORT, () => {
     runFeedSyncCycle().catch(error => {
       console.error(`[feed-scheduler] Interval sync failed: ${error.message}`);
     });
-  }, 21_600_000);
+  }, 10_800_000); // 3 hours
 });
 
 module.exports = { app, server, prisma };
