@@ -21,9 +21,29 @@ function toFloatOrNull(value) {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
+function isVehiclePhoto(src) {
+  if (!src) return false;
+  if (src.includes('cstatic-images.com')) return src.includes('/in/v2/');
+  if (src.includes('dealer_media')) return false;
+  if (src.includes('dealerrater.com')) return false;
+  if (src.includes('/employees/')) return false;
+  if (src.includes('/mobile-apps/')) return false;
+  if (src.includes('cldstatic/wp-content')) return false;
+  if (src.includes('assets.carsdn.co')) return false;
+  if (src.includes('placeholder')) return false;
+  if (src.includes('no-image')) return false;
+  if (src.includes('logo')) return false;
+  if (src.includes('favicon')) return false;
+  if (src.includes('icon')) return false;
+  if (src.includes('badge')) return false;
+  if (/\.svg(?:\?|#|$)/i.test(src)) return false;
+  if (/\b(?:1x1|spacer|pixel|blank)\b/i.test(src)) return false;
+  return true;
+}
+
 function normalizePhotos(photos) {
   if (!Array.isArray(photos)) return [];
-  return photos.map(toStringOrNull).filter(Boolean);
+  return photos.map(toStringOrNull).filter(p => p && isVehiclePhoto(p));
 }
 
 function arraysEqual(a, b) {

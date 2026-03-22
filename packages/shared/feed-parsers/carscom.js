@@ -83,12 +83,43 @@ function upgradePhotoSize(url) {
   );
 }
 
+function isVehiclePhoto(src) {
+  if (!src) return false;
+  // Only keep actual vehicle photos from cstatic-images.com/in/v2/ path
+  if (src.includes('cstatic-images.com')) return src.includes('/in/v2/');
+  // Block known non-vehicle image sources
+  if (src.includes('dealer_media')) return false;
+  if (src.includes('dealerrater.com')) return false;
+  if (src.includes('/employees/')) return false;
+  if (src.includes('/mobile-apps/')) return false;
+  if (src.includes('app-store')) return false;
+  if (src.includes('google-play')) return false;
+  if (src.includes('cldstatic/wp-content')) return false;
+  if (src.includes('assets.carsdn.co')) return false;
+  if (src.includes('/csa/')) return false;
+  if (src.includes('seal.png')) return false;
+  if (src.includes('placeholder')) return false;
+  if (src.includes('no-image')) return false;
+  if (src.includes('logo')) return false;
+  if (src.includes('favicon')) return false;
+  if (src.includes('icon')) return false;
+  if (src.includes('badge')) return false;
+  if (src.includes('banner')) return false;
+  if (src.includes('og-img')) return false;
+  if (src.includes('sprite')) return false;
+  if (src.includes('tracking')) return false;
+  if (src.includes('analytics')) return false;
+  if (/\.svg(?:\?|#|$)/i.test(src)) return false;
+  if (/\b(?:1x1|spacer|pixel|blank)\b/i.test(src)) return false;
+  return true;
+}
+
 function uniqPhotos(photos) {
   const seen = new Set();
   const out = [];
   for (const p of photos) {
     const url = upgradePhotoSize(resolveUrl(p, CARSCOM_BASE_URL));
-    if (!url || seen.has(url)) continue;
+    if (!url || seen.has(url) || !isVehiclePhoto(url)) continue;
     seen.add(url);
     out.push(url);
   }
