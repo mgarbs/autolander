@@ -165,7 +165,6 @@ export default function Inventory() {
               { value: 'not_posted', label: 'Not Posted to FB' },
               { value: 'needs_update', label: 'Needs Update' },
               { value: 'sold', label: 'Sold' },
-              { value: 'potentially_sold', label: 'Potentially Sold' },
             ]}
           />
         </div>
