@@ -144,7 +144,7 @@ function VehicleCard({ v, onSelect, variant = 'default', isStarting = false, dis
         <div className="flex items-start justify-between">
           <div>
             <h3 className="text-sm font-black text-white uppercase tracking-wide">
-              {v.year} {v.make} {v.model}
+              {v.year} {v.make} {v.model} {v.trim || ''}
             </h3>
             <p className="text-[10px] text-surface-500 font-mono uppercase mt-0.5">
               {v.vin || 'No VIN'}

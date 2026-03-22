@@ -272,7 +272,7 @@ export default function Inventory() {
               <div className="p-5 flex-1 flex flex-col">
                 <div className="mb-4">
                   <h3 className="text-lg font-black text-white leading-tight group-hover:text-brand-400 transition-colors">
-                    {v.year} {v.make} {v.model}
+                    {v.year} {v.make} {v.model} {v.trim || ''}
                   </h3>
                   <p className="text-[10px] font-bold text-surface-500 uppercase tracking-widest flex items-center gap-2 mt-1">
                     <Tag size={10} />
