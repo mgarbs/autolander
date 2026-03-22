@@ -65,6 +65,10 @@ export default function Inventory() {
     
     if (filterStatus === 'needs_update') {
       if (!v.listings?.facebook_marketplace?.stale) return false;
+    } else if (filterStatus === 'posted') {
+      if (!v.listings?.facebook_marketplace?.posted) return false;
+    } else if (filterStatus === 'not_posted') {
+      if (v.listings?.facebook_marketplace?.posted) return false;
     } else if (filterStatus !== 'All' && (v.status || 'available') !== filterStatus) {
       return false;
     }
@@ -98,6 +102,7 @@ export default function Inventory() {
   }
 
   const live = allVehicles.filter(v => (v.status || 'available') === 'available').length;
+  const posted = allVehicles.filter(v => v.listings?.facebook_marketplace?.posted).length;
   const sold = allVehicles.filter(v => v.status === 'sold' || v.status === 'potentially_sold').length;
 
   return (
@@ -112,7 +117,7 @@ export default function Inventory() {
             Inventory <span className="text-brand-500">Assets</span>
           </h1>
           <p className="text-surface-500 font-medium">
-            {allVehicles.length} total vehicles &middot; {live} available &middot; {sold} sold
+            {allVehicles.length} total &middot; {live} available &middot; {posted} posted to FB &middot; {sold} sold
           </p>
         </div>
         
@@ -156,6 +161,8 @@ export default function Inventory() {
             options={[
               { value: 'All', label: 'All Status' },
               { value: 'available', label: 'Available' },
+              { value: 'posted', label: 'Posted to FB' },
+              { value: 'not_posted', label: 'Not Posted to FB' },
               { value: 'needs_update', label: 'Needs Update' },
               { value: 'sold', label: 'Sold' },
               { value: 'potentially_sold', label: 'Potentially Sold' },
