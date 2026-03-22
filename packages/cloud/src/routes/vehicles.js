@@ -26,6 +26,12 @@ module.exports = function createVehiclesRouter(prisma) {
     return Array.from(reasons).join(',');
   }
 
+  function parseBooleanQuery(value) {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return undefined;
+  }
+
   router.get('/stats/summary', async (req, res) => {
     const orgId = req.orgId;
     const [total, posted, active, stale] = await Promise.all([
@@ -38,21 +44,33 @@ module.exports = function createVehiclesRouter(prisma) {
   });
 
   router.get('/', async (req, res) => {
-    const { status, search, limit = '1000', offset = '0', feedId, missingPhotos } = req.query;
+    const {
+      status,
+      search,
+      limit = '1000',
+      offset = '0',
+      feedId,
+      missingPhotos,
+      hasPhotos,
+      fbPosted,
+      fbStale,
+    } = req.query;
     const where = { orgId: req.orgId };
     if (status) where.status = status;
     if (feedId) where.feedId = feedId;
     if (missingPhotos === 'true') {
       where.photos = { isEmpty: true };
     }
-    if (req.query.hasPhotos === 'true') {
+    if (hasPhotos === 'true') {
       where.photos = { isEmpty: false };
     }
-    if (req.query.fbPosted !== undefined) {
-      where.fbPosted = req.query.fbPosted === 'true';
+    const postedFilter = parseBooleanQuery(fbPosted);
+    if (postedFilter !== undefined) {
+      where.fbPosted = postedFilter;
     }
-    if (req.query.fbStale !== undefined) {
-      where.fbStale = req.query.fbStale === 'true';
+    const staleFilter = parseBooleanQuery(fbStale);
+    if (staleFilter !== undefined) {
+      where.fbStale = staleFilter;
     }
     if (search) {
       where.OR = [
@@ -112,6 +130,38 @@ module.exports = function createVehiclesRouter(prisma) {
     });
 
     res.json({ success: true, vehicle: updated });
+  });
+
+  router.put('/:id/mark-posted', async (req, res) => {
+    const { fbListingUrl, fbListingId } = req.body;
+
+    const vehicle = await prisma.vehicle.findFirst({
+      where: { id: req.params.id, orgId: req.orgId },
+    });
+    if (!vehicle) return res.status(404).json({ error: 'Vehicle not found' });
+
+    const photosHash = crypto
+      .createHash('sha256')
+      .update(JSON.stringify(vehicle.photos || []))
+      .digest('hex');
+
+    await prisma.vehicle.update({
+      where: { id: vehicle.id },
+      data: {
+        fbPosted: true,
+        fbPostDate: new Date(),
+        fbListingUrl: fbListingUrl || null,
+        fbListingId: fbListingId || null,
+        fbPostedPrice: vehicle.price,
+        fbPostedDescription: vehicle.generatedDescription || vehicle.description,
+        fbPostedPhotosHash: photosHash,
+        fbStale: false,
+        fbStaleReason: null,
+        fbStaleSince: null,
+      },
+    });
+
+    res.json({ success: true });
   });
 
   router.put('/:id/mark-updated', async (req, res) => {

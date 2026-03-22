@@ -100,6 +100,12 @@ class FbPosterAdapter {
         percent: this._statusPercent(status.state),
         detail: status.detail || null,
       });
+
+      if (status.state === 'success' && status.detail?.postUrl) {
+        this._markVehiclePosted(vehicleData, status.detail).catch((err) => {
+          console.error('[fb-poster-adapter] Failed to mark vehicle as posted:', err.message);
+        });
+      }
     };
 
     this.assistedSession = session;
@@ -218,6 +224,33 @@ class FbPosterAdapter {
     });
 
     return result;
+  }
+
+  async _markVehiclePosted(vehicle, detail) {
+    if (!this.apiUrl || !this.authToken || !vehicle?.id) return;
+
+    try {
+      const url = `${this.apiUrl}/api/vehicles/${vehicle.id}/mark-posted`;
+      const response = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${this.authToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          fbListingUrl: detail.postUrl || null,
+          fbListingId: detail.postId || null,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      console.log(`[fb-poster-adapter] Marked vehicle ${vehicle.id} as posted`);
+    } catch (err) {
+      console.error('[fb-poster-adapter] mark-posted failed:', err.message);
+    }
   }
 
   async destroy() {

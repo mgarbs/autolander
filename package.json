@@ -1,7 +1,7 @@
 {
   "name": "autolander",
   "private": true,
-  "version": "1.10.3",
+  "version": "1.10.4",
   "description": "AutoLander SaaS — Multi-tenant auto sales automation",
   "workspaces": [
     "packages/shared",

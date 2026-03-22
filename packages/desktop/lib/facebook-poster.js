@@ -1303,7 +1303,10 @@ class FacebookPoster {
     this.log('Typing Model...');
     const modelField = await this.findFieldByLabel('Model');
     if (modelField) {
-      await this.typeIntoField(modelField, vehicle.model);
+      const modelWithTrim = vehicle.trim
+        ? `${vehicle.model} ${vehicle.trim}`
+        : vehicle.model;
+      await this.typeIntoField(modelField, modelWithTrim);
       fieldsFound++;
     } else { fieldsMissed++; }
     await humanDelay(800, 1500);
