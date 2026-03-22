@@ -425,8 +425,15 @@ function ensureInboxPolling() {
   return inboxPolling;
 }
 
+let _postResumeTimer = null;
+
 function pauseInboxPollingForAssistedPost() {
   if (!inboxPolling) return;
+  // Cancel any pending resume timer (user is posting again)
+  if (_postResumeTimer) {
+    clearTimeout(_postResumeTimer);
+    _postResumeTimer = null;
+  }
   inboxPolling.pause();
   if (agentClient) sendAgentStatus(agentClient.getStatus());
 }
@@ -438,8 +445,17 @@ function resumeInboxPollingAfterAssistedPost() {
     console.log('[ipc] Post complete but autoresponder is user-paused, not resuming');
     return;
   }
-  inboxPolling.resume();
-  if (agentClient) sendAgentStatus(agentClient.getStatus());
+  // Wait 5 minutes before resuming — gives the user time to post another vehicle
+  // without the autoresponder kicking in between posts
+  if (_postResumeTimer) clearTimeout(_postResumeTimer);
+  _postResumeTimer = setTimeout(() => {
+    _postResumeTimer = null;
+    if (!inboxPolling || inboxPolling._userPaused) return;
+    console.log('[ipc] 5 min since last post — resuming autoresponder');
+    inboxPolling.resume();
+    if (agentClient) sendAgentStatus(agentClient.getStatus());
+  }, 5 * 60 * 1000);
+  console.log('[ipc] Post complete — autoresponder will resume in 5 minutes');
 }
 
 function attachAssistedSessionPollingResume(adapter) {
