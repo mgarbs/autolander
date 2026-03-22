@@ -251,9 +251,12 @@ async function processVehicles(feed, parsedVehicles, prisma) {
       }
     }
 
+    // Archive vehicles that disappeared from the feed (sold or removed by dealer).
+    // Only runs when the sync found vehicles (>0), so a failed fetch doesn't
+    // accidentally archive the entire inventory.
     const seenVinList = Array.from(seenVins);
     if (seenVinList.length > 0) {
-      await prisma.vehicle.updateMany({
+      const archived = await prisma.vehicle.updateMany({
         where: {
           orgId: feed.orgId,
           feedId: feed.id,
@@ -262,10 +265,12 @@ async function processVehicles(feed, parsedVehicles, prisma) {
             { vin: { notIn: seenVinList } },
           ],
           status: { not: 'ARCHIVED' },
-          fbPosted: true,
         },
         data: { status: 'ARCHIVED' },
       });
+      if (archived.count > 0) {
+        console.log(`[feed-sync] Archived ${archived.count} vehicles no longer in feed`);
+      }
     }
     // When 0 vehicles are found, do NOT archive existing inventory.
     // A zero-result sync is almost certainly a fetch failure (403, bot block,
