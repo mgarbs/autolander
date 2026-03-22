@@ -228,7 +228,7 @@ export default function SalesDashboard() {
           label="INVENTORY"
           value={stats?.vehicles || 0}
           icon={CarFront}
-          subtext={`${stats?.posted || 0} active listings`}
+          subtext={`${stats?.posted || 0} posted to FB`}
         />
       </div>
 
