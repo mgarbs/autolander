@@ -181,31 +181,9 @@ function extractPhotos(html) {
     return jsonLdPhotos.slice(0, MAX_PHOTOS);
   }
 
-  // 2. Fallback: <img> tags + srcset + og:image
-  const imgPhotos = [];
-
-  $('img').each((_, el) => {
-    const node = $(el);
-    for (const attr of ['src', 'data-src', 'data-original', 'data-lazy-src', 'data-hi-res-src']) {
-      const url = collect(node.attr(attr));
-      if (url) imgPhotos.push(url);
-    }
-  });
-
-  $('source[srcset]').each((_, el) => {
-    const srcset = $(el).attr('srcset') || '';
-    for (const part of srcset.split(',')) {
-      const url = collect(part.trim().split(/\s+/)[0]);
-      if (url) imgPhotos.push(url);
-    }
-  });
-
-  $('meta[property="og:image"]').each((_, el) => {
-    const url = collect($(el).attr('content'));
-    if (url) imgPhotos.push(url);
-  });
-
-  return imgPhotos.slice(0, MAX_PHOTOS);
+  // No JSON-LD photos = listing has no photos. Don't fall back to <img>
+  // scraping which picks up "similar vehicles" photos from other listings.
+  return [];
 }
 
 function isNetworkError(error) {

@@ -221,33 +221,11 @@ function extractPhotos(html) {
     return jsonLdPhotos.slice(0, MAX_PHOTOS);
   }
 
-  // 2. Fallback: <img> tags + <source srcset> + og:image
-  const imgPhotos = [];
-
-  $('img').each((_, el) => {
-    const node = $(el);
-    for (const attr of ['src', 'data-src', 'data-original', 'data-lazy-src', 'data-hi-res-src']) {
-      const url = collect(node.attr(attr));
-      if (url) imgPhotos.push(url);
-    }
-  });
-
-  $('source[srcset]').each((_, el) => {
-    const srcset = $(el).attr('srcset') || '';
-    for (const part of srcset.split(',')) {
-      const url = collect(part.trim().split(/\s+/)[0]);
-      if (url) imgPhotos.push(url);
-    }
-  });
-
-  $('meta[property="og:image"]').each((_, el) => {
-    const url = collect($(el).attr('content'));
-    if (url) imgPhotos.push(url);
-  });
-
-  const vehiclePhotos = imgPhotos.filter(u => u.includes('cstatic-images.com') && u.includes('/in/v2/'));
-  const result = vehiclePhotos.length > 0 ? vehiclePhotos : imgPhotos;
-  return result.slice(0, MAX_PHOTOS);
+  // If JSON-LD had no photos, the listing genuinely has no photos.
+  // Do NOT fall back to <img> scraping — that picks up "similar vehicles"
+  // section photos which belong to other vehicles.
+  // The next feed sync will detect if photos are added to the listing.
+  return [];
 }
 
 function isNetworkError(error) {
