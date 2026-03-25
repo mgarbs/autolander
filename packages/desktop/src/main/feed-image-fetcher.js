@@ -181,9 +181,21 @@ function extractPhotos(html) {
     return jsonLdPhotos.slice(0, MAX_PHOTOS);
   }
 
-  // No JSON-LD photos = listing has no photos. Don't fall back to <img>
-  // scraping which picks up "similar vehicles" photos from other listings.
-  return [];
+  // Fallback: <img> tags — only cstatic vehicle photos, capped at MAX_PHOTOS.
+  const imgPhotos = [];
+  $('img').each((_, el) => {
+    if (imgPhotos.length >= MAX_PHOTOS) return false;
+    const node = $(el);
+    for (const attr of ['src', 'data-src', 'data-original', 'data-lazy-src', 'data-hi-res-src']) {
+      const url = collect(node.attr(attr));
+      if (url) {
+        imgPhotos.push(url);
+        break;
+      }
+    }
+  });
+
+  return imgPhotos.slice(0, MAX_PHOTOS);
 }
 
 function isNetworkError(error) {

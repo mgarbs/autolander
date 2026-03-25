@@ -221,11 +221,24 @@ function extractPhotos(html) {
     return jsonLdPhotos.slice(0, MAX_PHOTOS);
   }
 
-  // If JSON-LD had no photos, the listing genuinely has no photos.
-  // Do NOT fall back to <img> scraping — that picks up "similar vehicles"
-  // section photos which belong to other vehicles.
-  // The next feed sync will detect if photos are added to the listing.
-  return [];
+  // 2. Fallback: <img> tags — but ONLY cstatic vehicle photos, capped at MAX_PHOTOS.
+  // JSON-LD is preferred but not all cars.com detail pages include it.
+  // The cap prevents picking up "similar vehicles" section photos (which appear
+  // after the gallery). The gallery is always first on the page.
+  const imgPhotos = [];
+  $('img').each((_, el) => {
+    if (imgPhotos.length >= MAX_PHOTOS) return false; // stop early
+    const node = $(el);
+    for (const attr of ['src', 'data-src', 'data-original', 'data-lazy-src', 'data-hi-res-src']) {
+      const url = collect(node.attr(attr));
+      if (url && url.includes('cstatic-images.com') && url.includes('/in/v2/')) {
+        imgPhotos.push(url);
+        break;
+      }
+    }
+  });
+
+  return imgPhotos.slice(0, MAX_PHOTOS);
 }
 
 function isNetworkError(error) {

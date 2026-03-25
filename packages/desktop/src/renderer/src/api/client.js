@@ -271,7 +271,7 @@ export function getTeamStats() {
 }
 
 export async function getInventory({ signal } = {}) {
-  const data = await fetchJSON('/api/vehicles?hasPhotos=true', { signal });
+  const data = await fetchJSON('/api/vehicles?status=ACTIVE', { signal });
   return {
     vehicles: (data.vehicles || []).map(toInventoryFormat),
     meta: { total: data.total || 0 },
