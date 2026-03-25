@@ -280,8 +280,8 @@ export async function getInventory({ signal } = {}) {
 
 export async function getPostQueue({ signal } = {}) {
   const [unpostedRes, staleRes] = await Promise.all([
-    fetchJSON('/api/vehicles?fbPosted=false&status=ACTIVE&hasPhotos=true', { signal }),
-    fetchJSON('/api/vehicles?fbPosted=true&fbStale=true&status=ACTIVE&hasPhotos=true', { signal }),
+    fetchJSON('/api/vehicles?fbPosted=false&status=ACTIVE', { signal }),
+    fetchJSON('/api/vehicles?fbPosted=true&fbStale=true&status=ACTIVE', { signal }),
   ]);
   const unposted = (unpostedRes.vehicles || []).map(toInventoryFormat);
   const stale = (staleRes.vehicles || []).map(toInventoryFormat);
