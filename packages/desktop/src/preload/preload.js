@@ -2,6 +2,13 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+// Listen for auth expiry from backend services and redirect to login
+ipcRenderer.on('auth:expired', () => {
+  localStorage.removeItem('accessToken');
+  localStorage.removeItem('refreshToken');
+  window.location.hash = '#/login';
+});
+
 contextBridge.exposeInMainWorld('autolander', {
   fetchFeedHtml: (url) => ipcRenderer.invoke('feed:fetch-html', url),
   fetchFeedImages: (feed) => ipcRenderer.invoke('feed:fetch-images', feed),

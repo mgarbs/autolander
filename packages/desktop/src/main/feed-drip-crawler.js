@@ -335,6 +335,18 @@ class FeedDripCrawler {
     };
   }
 
+  _handleAuthExpired() {
+    console.error('[drip-crawler] Auth token expired (401) — stopping crawler');
+    this.stop();
+    try {
+      const { getMainWindow } = require('./window-manager');
+      const win = getMainWindow();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('auth:expired');
+      }
+    } catch (_) {}
+  }
+
   async _runLoop() {
     if (this.running) return;
     this.running = true;
@@ -437,6 +449,7 @@ class FeedDripCrawler {
     const response = await fetch(url, { headers: this._authHeaders() });
 
     if (!response.ok) {
+      if (response.status === 401) { this._handleAuthExpired(); return []; }
       throw new Error(`API error: HTTP ${response.status}`);
     }
 

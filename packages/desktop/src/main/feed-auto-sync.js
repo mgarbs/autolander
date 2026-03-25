@@ -231,6 +231,13 @@ class FeedAutoSync {
     });
 
     if (!response.ok) {
+      if (response.status === 401) {
+        this.stop();
+        try {
+          const win = getMainWindow();
+          if (win && !win.isDestroyed()) win.webContents.send('auth:expired');
+        } catch (_) {}
+      }
       throw new Error(`Failed to fetch feeds: HTTP ${response.status}`);
     }
 
