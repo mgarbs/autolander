@@ -150,6 +150,16 @@ function extractPhotos(html) {
   const $ = cheerio.load(html);
   const seen = new Set();
 
+  function samplePhotos(photos, max) {
+    if (photos.length <= max) return photos;
+    const result = [];
+    const step = photos.length / max;
+    for (let i = 0; i < max; i++) {
+      result.push(photos[Math.floor(i * step)]);
+    }
+    return result;
+  }
+
   function collect(src) {
     if (!src) return null;
     if (!src.includes('cstatic-images.com')) return null;
@@ -178,13 +188,12 @@ function extractPhotos(html) {
   });
 
   if (jsonLdPhotos.length > 0) {
-    return jsonLdPhotos.slice(0, MAX_PHOTOS);
+    return samplePhotos(jsonLdPhotos, MAX_PHOTOS);
   }
 
-  // Fallback: <img> tags — only cstatic vehicle photos, capped at MAX_PHOTOS.
+  // Fallback: <img> tags — collect all valid cstatic vehicle photos, then sample.
   const imgPhotos = [];
   $('img').each((_, el) => {
-    if (imgPhotos.length >= MAX_PHOTOS) return false;
     const node = $(el);
     for (const attr of ['src', 'data-src', 'data-original', 'data-lazy-src', 'data-hi-res-src']) {
       const url = collect(node.attr(attr));
@@ -195,7 +204,7 @@ function extractPhotos(html) {
     }
   });
 
-  return imgPhotos.slice(0, MAX_PHOTOS);
+  return samplePhotos(imgPhotos, MAX_PHOTOS);
 }
 
 function isNetworkError(error) {

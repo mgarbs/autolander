@@ -462,25 +462,10 @@ function scrapeVehicleCards(html, feedUrl) {
         cleanText(node.attr('aria-label')) ||
         cleanText(node.text());
 
-      // Collect image URLs from multiple attributes — catches lazy-loaded
-      // images that only populate data-src, data-original, or srcset
       const photoUrls = [];
-      node.find('img').each((_, img) => {
-        const imgNode = $(img);
-        const src = imgNode.attr('data-src')
-          || imgNode.attr('data-original')
-          || imgNode.attr('data-lazy-src')
-          || imgNode.attr('src');
-        if (src) photoUrls.push(src);
-      });
-      // Also check <source srcset> inside <picture> elements
-      node.find('source[srcset]').each((_, source) => {
-        const srcset = $(source).attr('srcset') || '';
-        for (const part of srcset.split(',')) {
-          const src = part.trim().split(/\s+/)[0];
-          if (src) photoUrls.push(src);
-        }
-      });
+      // Don't collect photos from search results page - thumbnails are
+      // unreliable and cause phantom photos on vehicles with no gallery.
+      // Real photos will be fetched by the drip crawler from detail pages.
 
       const raw = {
         vin: node.attr('data-vin') || extractVin(node.text()),

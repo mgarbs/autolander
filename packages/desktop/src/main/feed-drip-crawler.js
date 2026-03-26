@@ -191,6 +191,16 @@ function extractPhotos(html) {
   const $ = cheerio.load(html);
   const seen = new Set();
 
+  function samplePhotos(photos, max) {
+    if (photos.length <= max) return photos;
+    const result = [];
+    const step = photos.length / max;
+    for (let i = 0; i < max; i++) {
+      result.push(photos[Math.floor(i * step)]);
+    }
+    return result;
+  }
+
   function collect(src) {
     if (!src || !isVehiclePhoto(src)) return null;
     const upgraded = upgradeSize(src.trim());
@@ -215,19 +225,17 @@ function extractPhotos(html) {
   // Filter to cstatic vehicle photos
   const jsonLdVehicle = jsonLdPhotos.filter(u => u.includes('cstatic-images.com') && u.includes('/in/v2/'));
   if (jsonLdVehicle.length > 0) {
-    return jsonLdVehicle.slice(0, MAX_PHOTOS);
+    return samplePhotos(jsonLdVehicle, MAX_PHOTOS);
   }
   if (jsonLdPhotos.length > 0) {
-    return jsonLdPhotos.slice(0, MAX_PHOTOS);
+    return samplePhotos(jsonLdPhotos, MAX_PHOTOS);
   }
 
-  // 2. Fallback: <img> tags — but ONLY cstatic vehicle photos, capped at MAX_PHOTOS.
+  // 2. Fallback: <img> tags — but ONLY cstatic vehicle photos.
   // JSON-LD is preferred but not all cars.com detail pages include it.
-  // The cap prevents picking up "similar vehicles" section photos (which appear
-  // after the gallery). The gallery is always first on the page.
+  // Collect all valid candidates, then sample evenly across the gallery.
   const imgPhotos = [];
   $('img').each((_, el) => {
-    if (imgPhotos.length >= MAX_PHOTOS) return false; // stop early
     const node = $(el);
     for (const attr of ['src', 'data-src', 'data-original', 'data-lazy-src', 'data-hi-res-src']) {
       const url = collect(node.attr(attr));
@@ -238,7 +246,7 @@ function extractPhotos(html) {
     }
   });
 
-  return imgPhotos.slice(0, MAX_PHOTOS);
+  return samplePhotos(imgPhotos, MAX_PHOTOS);
 }
 
 function isNetworkError(error) {
