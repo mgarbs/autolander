@@ -178,14 +178,20 @@ class AssistedPostSession {
   async _navigateToListingForm() {
     if (this._isEditMode()) {
       const listingId = this._editListingId || this._extractListingId(this.editListingUrl);
-      const targetUrl = listingId ? this._buildEditUrl(listingId) : this.editListingUrl;
 
-      this._editListingId = listingId;
-      if (listingId) {
-        this.log(`Editing existing listing: ${targetUrl}`);
-      } else {
-        this.log(`Could not extract listing ID from ${this.editListingUrl}, using the provided edit URL directly`);
+      if (!listingId) {
+        // No valid listing ID — the URL captured at post time was the selling
+        // dashboard, not the actual listing. Can't edit without the listing ID.
+        this.log(`No listing ID found in URL: ${this.editListingUrl}`);
+        throw new Error(
+          'Cannot find this listing on Facebook. The listing URL was not captured correctly. ' +
+          'Please update the price manually on Facebook Marketplace, or delete and re-post the vehicle.'
+        );
       }
+
+      const targetUrl = this._buildEditUrl(listingId);
+      this._editListingId = listingId;
+      this.log(`Editing existing listing: ${targetUrl}`);
 
       this._setStatus('navigating', 'Opening Marketplace edit form...');
       await this.poster.page.goto(targetUrl, {
@@ -496,9 +502,14 @@ class AssistedPostSession {
 
   _buildSuccessDetail(pageState) {
     const postId = this._extractListingId(pageState.url) || this._editListingId || null;
-    const postUrl = pageState.url.includes('/item/')
+    let postUrl = pageState.url.includes('/item/')
       ? pageState.url
       : (postId ? this._buildItemUrl(postId) : (this.editListingUrl || pageState.url));
+
+    // Don't store the selling dashboard as the listing URL — it's useless for edits
+    if (postUrl && (postUrl.includes('/marketplace/you') || postUrl.includes('/marketplace/create'))) {
+      postUrl = postId ? this._buildItemUrl(postId) : null;
+    }
 
     return {
       postUrl,
