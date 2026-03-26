@@ -220,8 +220,9 @@ export default function Inventory() {
                     className="w-full h-full object-cover"
                   />
                 ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <CarFront size={64} className="text-surface-900 transform -rotate-12 group-hover:scale-110 transition-transform duration-500" />
+                  <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-surface-900/50">
+                    <CarFront size={40} className="text-surface-700" />
+                    <span className="text-[9px] font-bold text-surface-600 uppercase tracking-widest">Photo Coming Soon</span>
                   </div>
                 )}
                 <div className="absolute inset-0 bg-gradient-to-t from-surface-950 to-transparent opacity-60 z-10 pointer-events-none" />

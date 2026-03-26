@@ -206,28 +206,14 @@ async function processVehicles(feed, parsedVehicles, prisma) {
         }
 
         if (Object.keys(changedFields).length > 0) {
+          // Only flag as stale for PRICE changes on vehicles already posted to FB.
+          // Everything else (photos, description, etc.) updates silently in the DB.
           if (existing.fbPosted && !existing.fbStale) {
             const staleReasons = [];
 
             if (changedFields.price !== undefined && existing.fbPostedPrice !== null) {
               if (changedFields.price !== existing.fbPostedPrice) {
                 staleReasons.push(`price_changed:${existing.fbPostedPrice}->${changedFields.price}`);
-              }
-            }
-
-            if (changedFields.photos !== undefined && existing.fbPostedPhotosHash) {
-              const newHash = crypto
-                .createHash('sha256')
-                .update(JSON.stringify(changedFields.photos || []))
-                .digest('hex');
-              if (newHash !== existing.fbPostedPhotosHash) {
-                staleReasons.push('photos_changed');
-              }
-            }
-
-            if (changedFields.description !== undefined && existing.fbPostedDescription !== null) {
-              if (changedFields.description !== existing.fbPostedDescription) {
-                staleReasons.push('description_changed');
               }
             }
 

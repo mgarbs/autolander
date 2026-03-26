@@ -135,8 +135,9 @@ function VehicleCard({ v, onSelect, variant = 'default', isStarting = false, dis
           className="w-full h-40 object-cover bg-surface-900"
         />
       ) : (
-        <div className="w-full h-40 bg-surface-900/50 flex items-center justify-center">
-          <Car size={32} className="text-surface-700" />
+        <div className="w-full h-40 bg-surface-900/50 flex flex-col items-center justify-center gap-1">
+          <Car size={28} className="text-surface-700" />
+          <span className="text-[8px] font-bold text-surface-600 uppercase tracking-widest">Photo Coming Soon</span>
         </div>
       )}
 
