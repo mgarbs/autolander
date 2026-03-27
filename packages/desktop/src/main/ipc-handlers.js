@@ -437,8 +437,8 @@ function updateAgentFbSessionStatus(valid) {
 
 function ensureInboxPolling() {
   if (inboxPolling) return inboxPolling;
-  const { InboxPolling } = require('../worker/inbox-polling');
-  inboxPolling = new InboxPolling({ fbInboxAdapter: getIpcFbInboxAdapter() });
+  const { InboxListener } = require('../worker/inbox-listener');
+  inboxPolling = new InboxListener({ fbInboxAdapter: getIpcFbInboxAdapter() });
   inboxPolling.on('poll-complete', () => {
     if (agentClient) sendAgentStatus(agentClient.getStatus());
   });
