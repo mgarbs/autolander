@@ -233,7 +233,8 @@ function extractPhotos(html) {
 
   // 2. Fallback: <img> tags — but ONLY cstatic vehicle photos.
   // JSON-LD is preferred but not all cars.com detail pages include it.
-  // Collect all valid candidates, then sample evenly across the gallery.
+  // Collect all valid candidates, then trim the tail (recommendation
+  // section photos are always last) and sample evenly across the gallery.
   const imgPhotos = [];
   $('img').each((_, el) => {
     const node = $(el);
@@ -246,7 +247,11 @@ function extractPhotos(html) {
     }
   });
 
-  return samplePhotos(imgPhotos, MAX_PHOTOS);
+  // Drop the last 15% — "Similar Vehicles" section photos are always at the end
+  const trimmed = imgPhotos.length > 10
+    ? imgPhotos.slice(0, Math.ceil(imgPhotos.length * 0.85))
+    : imgPhotos;
+  return samplePhotos(trimmed, MAX_PHOTOS);
 }
 
 function isNetworkError(error) {

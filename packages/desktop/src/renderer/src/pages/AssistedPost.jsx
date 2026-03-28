@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getPostQueue, markVehiclePosted, markVehicleUpdated } from '../api/client';
+import { getPostQueue, markVehiclePosted } from '../api/client';
 import FilterDropdown from '../components/FilterDropdown';
-import Badge from '../components/Badge';
 import {
   Send,
   ArrowLeft,
@@ -66,22 +65,17 @@ export default function AssistedPost() {
   };
 
   const handleResult = async (data) => {
-    // Mark the vehicle as posted/updated in the database
+    // Mark the vehicle as posted in the database
     if (data && !data.error) {
       const vehicle = vehicles.find(v => v.vin === selectedVin);
-      const fb = vehicle?.listings?.facebook_marketplace;
       try {
-        if (fb?.stale && fb?.listingUrl) {
-          await markVehicleUpdated(vehicle.id);
-        } else {
-          await markVehiclePosted({
-            vehicleId: vehicle?.id,
-            vin: selectedVin,
-            postUrl: data.postUrl,
-            postId: data.postId,
-            postedAt: data.postedAt,
-          });
-        }
+        await markVehiclePosted({
+          vehicleId: vehicle?.id,
+          vin: selectedVin,
+          postUrl: data.postUrl,
+          postId: data.postId,
+          postedAt: data.postedAt,
+        });
       } catch (e) {
         console.error('Failed to update vehicle status:', e.message);
       }
@@ -119,13 +113,11 @@ export default function AssistedPost() {
 // ---------------------------------------------------------------------------
 const PER_PAGE = 12;
 
-function VehicleCard({ v, onSelect, variant = 'default', isStarting = false, disableActions = false }) {
-  const isStale = variant === 'stale';
+function VehicleCard({ v, onSelect, isStarting = false, disableActions = false }) {
   const disabled = disableActions || isStarting;
-  const hasUrl = !!v.listings?.facebook_marketplace?.listingUrl;
 
   return (
-    <div className={`glass-card overflow-hidden group transition-all ${isStale ? 'hover:border-amber-500/30 border-amber-500/10' : 'hover:border-brand-500/30'}`}>
+    <div className="glass-card overflow-hidden group transition-all hover:border-brand-500/30">
       {/* Photo thumbnail */}
       {v.photos?.[0] ? (
         <img
@@ -169,49 +161,13 @@ function VehicleCard({ v, onSelect, variant = 'default', isStarting = false, dis
           )}
         </div>
 
-        {isStale && (
-          <div className="flex flex-wrap gap-1 mt-1">
-            {(() => {
-              const reason = v.listings?.facebook_marketplace?.staleReason || '';
-              const parts = reason.split(',').filter(Boolean);
-              const badges = [];
-
-              for (const part of parts) {
-                const priceMatch = part.match(/price_changed:([\d.]+)->([\d.]+)/);
-                if (priceMatch) {
-                  badges.push(`Price: $${Number(priceMatch[1]).toLocaleString()} → $${Number(priceMatch[2]).toLocaleString()}`);
-                } else if (part === 'photos_changed') {
-                  badges.push('Photos Updated');
-                } else if (part === 'description_changed') {
-                  badges.push('Description Updated');
-                } else {
-                  badges.push('Needs Update');
-                }
-              }
-
-              if (badges.length === 0) badges.push('Needs Update');
-
-              return badges.map((text, i) => (
-                <Badge key={i} variant="warning" size="xs">
-                  <AlertCircle size={8} className="mr-1" />
-                  {text}
-                </Badge>
-              ));
-            })()}
-          </div>
-        )}
-
         <button
           onClick={() => onSelect(v)}
           disabled={disabled}
-          className={`w-full mt-2 py-2.5 text-white text-xs font-black uppercase tracking-widest rounded-xl transition-all flex items-center justify-center gap-2 active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed disabled:active:scale-100 ${
-            isStale
-              ? 'bg-amber-500 hover:bg-amber-600'
-              : 'bg-brand-500 hover:bg-brand-600 shadow-glow-blue'
-          }`}
+          className="w-full mt-2 py-2.5 text-white text-xs font-black uppercase tracking-widest rounded-xl transition-all flex items-center justify-center gap-2 active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed disabled:active:scale-100 bg-brand-500 hover:bg-brand-600 shadow-glow-blue"
         >
-          {isStarting ? <Loader2 size={14} className="animate-spin" /> : (isStale ? <RefreshCw size={14} /> : <Send size={14} />)}
-          {isStarting ? 'Starting...' : (isStale ? (hasUrl ? 'Update on FB' : 'Re-Post') : 'Post to Marketplace')}
+          {isStarting ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+          {isStarting ? 'Starting...' : 'Post to Marketplace'}
         </button>
       </div>
     </div>
@@ -227,10 +183,6 @@ function VehicleSelector({ vehicles, loading, onSelect, startingVin = null }) {
 
   const available = vehicles.filter(v =>
     !v.listings?.facebook_marketplace?.posted
-  );
-  const stale = vehicles.filter(v =>
-    v.listings?.facebook_marketplace?.posted &&
-    v.listings?.facebook_marketplace?.stale
   );
 
   // Unique makes and body styles for filter dropdowns
@@ -304,7 +256,7 @@ function VehicleSelector({ vehicles, loading, onSelect, startingVin = null }) {
         <div className="flex items-center justify-center py-20 opacity-30">
           <RefreshCw size={24} className="animate-spin" />
         </div>
-      ) : available.length === 0 && stale.length === 0 ? (
+      ) : available.length === 0 ? (
         <div className="glass-card p-12 text-center">
           <Car size={40} className="mx-auto mb-4 text-surface-600" />
           <p className="text-surface-400 font-medium">No vehicles available to post.</p>
@@ -312,30 +264,6 @@ function VehicleSelector({ vehicles, loading, onSelect, startingVin = null }) {
         </div>
       ) : (
         <>
-          {/* Stale listings — dealer updated data since last FB post */}
-          {stale.length > 0 && (
-            <div className="space-y-4">
-              <div className="flex items-center gap-2">
-                <AlertCircle size={14} className="text-amber-400" />
-                <h2 className="text-xs font-black uppercase tracking-widest text-amber-400">
-                  Updated Since Posted ({stale.length})
-                </h2>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {stale.map(v => (
-                  <VehicleCard
-                    key={v.vin}
-                    v={v}
-                    onSelect={onSelect}
-                    variant="stale"
-                    isStarting={startingVin === v.vin}
-                    disableActions={!!startingVin && startingVin !== v.vin}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-
           {/* Toolbar: search, filters, sort */}
           {available.length > 0 && (
             <div className="space-y-4">

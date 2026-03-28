@@ -9,6 +9,7 @@ import Inventory from './pages/Inventory';
 import Settings from './pages/Settings';
 import FacebookAuth from './pages/FacebookAuth';
 import AssistedPost from './pages/AssistedPost';
+import ListingUpdates from './pages/ListingUpdates';
 import Appointments from './pages/Appointments';
 
 function ProtectedRoute({ children }) {
@@ -49,6 +50,7 @@ export default function App() {
         <Route path="/leads/:buyerId" element={<LeadDetailPage />} />
         <Route path="/inventory" element={<Inventory />} />
         <Route path="/post" element={<AssistedPost />} />
+        <Route path="/updates" element={<ListingUpdates />} />
         <Route path="/appointments" element={<Appointments />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/settings/facebook" element={<FacebookAuth />} />

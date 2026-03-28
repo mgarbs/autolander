@@ -5,6 +5,7 @@ import {
   GitBranch,
   CarFront,
   Send,
+  RefreshCw,
   Settings,
   LogOut,
   ChevronRight,
@@ -20,6 +21,7 @@ const navItems = [
   { to: '/inventory', label: 'Inventory Management', icon: CarFront },
   { to: '/appointments', label: 'Appointments', icon: Calendar },
   { to: '/post', label: 'Post to Market', icon: Send },
+  { to: '/updates', label: 'Listing Updates', icon: RefreshCw },
   { to: '/settings', label: 'Configuration', icon: Settings },
 ];
 

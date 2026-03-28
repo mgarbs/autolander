@@ -204,7 +204,11 @@ function extractPhotos(html) {
     }
   });
 
-  return samplePhotos(imgPhotos, MAX_PHOTOS);
+  // Drop the last 15% — "Similar Vehicles" section photos are always at the end
+  const trimmed = imgPhotos.length > 10
+    ? imgPhotos.slice(0, Math.ceil(imgPhotos.length * 0.85))
+    : imgPhotos;
+  return samplePhotos(trimmed, MAX_PHOTOS);
 }
 
 function isNetworkError(error) {
