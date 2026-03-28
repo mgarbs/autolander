@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { fetchJSON, toInventoryFormat, markVehicleUpdated } from '../api/client';
+import { getStaleListings, markVehicleUpdated } from '../api/client';
 import Badge from '../components/Badge';
 import {
   RefreshCw,
@@ -23,8 +23,8 @@ export default function ListingUpdates() {
   const fetchStaleVehicles = async () => {
     setLoading(true);
     try {
-      const data = await fetchJSON('/api/vehicles?fbPosted=true&fbStale=true&status=ACTIVE');
-      setVehicles((data.vehicles || []).map(toInventoryFormat));
+      const result = await getStaleListings();
+      setVehicles(result.vehicles || []);
     } catch (e) {
       console.error('Failed to fetch stale vehicles:', e);
     } finally {

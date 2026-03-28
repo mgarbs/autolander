@@ -291,6 +291,14 @@ export async function getPostQueue({ signal } = {}) {
   };
 }
 
+export async function getStaleListings({ signal } = {}) {
+  const data = await fetchJSON('/api/vehicles?fbPosted=true&fbStale=true&status=ACTIVE', { signal });
+  return {
+    vehicles: (data.vehicles || []).map(toInventoryFormat),
+    meta: { total: (data.vehicles || []).length },
+  };
+}
+
 export async function markVehiclePosted({ vehicleId, vin, postUrl, postId, postedAt }) {
   return fetchJSON('/api/vehicles/mark-posted', {
     method: 'PUT',
