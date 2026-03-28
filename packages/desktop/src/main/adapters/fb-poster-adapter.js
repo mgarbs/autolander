@@ -101,8 +101,9 @@ class FbPosterAdapter {
         detail: status.detail || null,
       });
 
-      if (status.state === 'success' && status.detail?.postUrl) {
-        this._markVehiclePosted(vehicleData, status.detail).catch((err) => {
+      if (status.state === 'success') {
+        // Always mark as posted, then try to find the real listing URL
+        this._markVehiclePostedAndFindUrl(vehicleData, status.detail || {}).catch((err) => {
           console.error('[fb-poster-adapter] Failed to mark vehicle as posted:', err.message);
         });
       }
@@ -226,30 +227,84 @@ class FbPosterAdapter {
     return result;
   }
 
-  async _markVehiclePosted(vehicle, detail) {
+  async _markVehiclePostedAndFindUrl(vehicle, detail) {
     if (!this.apiUrl || !this.authToken || !vehicle?.id) return;
+
+    // Step 1: Mark as posted immediately (even without URL)
+    let fbListingUrl = detail.postUrl || null;
+    let fbListingId = detail.postId || null;
 
     try {
       const url = `${this.apiUrl}/api/vehicles/${vehicle.id}/mark-posted`;
-      const response = await fetch(url, {
+      await fetch(url, {
         method: 'PUT',
         headers: {
           Authorization: `Bearer ${this.authToken}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          fbListingUrl: detail.postUrl || null,
-          fbListingId: detail.postId || null,
-        }),
+        body: JSON.stringify({ fbListingUrl, fbListingId }),
       });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
       console.log(`[fb-poster-adapter] Marked vehicle ${vehicle.id} as posted`);
     } catch (err) {
       console.error('[fb-poster-adapter] mark-posted failed:', err.message);
+    }
+
+    // Step 2: If we don't have a real listing URL, try to find it
+    // by navigating to the selling page and matching by title
+    if (!fbListingId && this.assistedSession?.poster?.page) {
+      try {
+        const page = this.assistedSession.poster.page;
+        const title = `${vehicle.year} ${vehicle.make} ${vehicle.model}`.toLowerCase();
+        console.log(`[fb-poster-adapter] Searching selling page for "${title}"...`);
+
+        await page.goto('https://www.facebook.com/marketplace/you/selling', {
+          waitUntil: 'networkidle2',
+          timeout: 30000,
+        });
+        await new Promise(r => setTimeout(r, 3000));
+
+        // Scrape listing links from the selling page
+        const found = await page.evaluate((searchTitle) => {
+          const links = document.querySelectorAll('a[href*="/item/"]');
+          for (const link of links) {
+            const text = (link.textContent || '').toLowerCase();
+            if (text.includes(searchTitle)) {
+              const href = link.href || link.getAttribute('href');
+              const match = href.match(/\/item\/(\d+)/);
+              if (match) {
+                return { listingId: match[1], listingUrl: `https://www.facebook.com/marketplace/item/${match[1]}/` };
+              }
+            }
+          }
+          return null;
+        }, title);
+
+        if (found) {
+          fbListingUrl = found.listingUrl;
+          fbListingId = found.listingId;
+          console.log(`[fb-poster-adapter] Found listing URL: ${fbListingUrl}`);
+
+          // Update the vehicle with the real URL
+          try {
+            const url = `${this.apiUrl}/api/vehicles/${vehicle.id}/mark-posted`;
+            await fetch(url, {
+              method: 'PUT',
+              headers: {
+                Authorization: `Bearer ${this.authToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ fbListingUrl, fbListingId }),
+            });
+            console.log(`[fb-poster-adapter] Updated listing URL for ${vehicle.id}`);
+          } catch (err) {
+            console.error('[fb-poster-adapter] URL update failed:', err.message);
+          }
+        } else {
+          console.log('[fb-poster-adapter] Could not find listing on selling page');
+        }
+      } catch (err) {
+        console.error('[fb-poster-adapter] Selling page scrape failed:', err.message);
+      }
     }
   }
 
