@@ -191,24 +191,8 @@ function extractPhotos(html) {
     return samplePhotos(jsonLdPhotos, MAX_PHOTOS);
   }
 
-  // Fallback: <img> tags — collect all valid cstatic vehicle photos, then sample.
-  const imgPhotos = [];
-  $('img').each((_, el) => {
-    const node = $(el);
-    for (const attr of ['src', 'data-src', 'data-original', 'data-lazy-src', 'data-hi-res-src']) {
-      const url = collect(node.attr(attr));
-      if (url) {
-        imgPhotos.push(url);
-        break;
-      }
-    }
-  });
-
-  // Drop the last 15% — "Similar Vehicles" section photos are always at the end
-  const trimmed = imgPhotos.length > 10
-    ? imgPhotos.slice(0, Math.ceil(imgPhotos.length * 0.85))
-    : imgPhotos;
-  return samplePhotos(trimmed, MAX_PHOTOS);
+  // No JSON-LD = no gallery. Return empty. "Coming Soon" is better than wrong photos.
+  return [];
 }
 
 function isNetworkError(error) {

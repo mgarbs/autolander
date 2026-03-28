@@ -231,27 +231,11 @@ function extractPhotos(html) {
     return samplePhotos(jsonLdPhotos, MAX_PHOTOS);
   }
 
-  // 2. Fallback: <img> tags — but ONLY cstatic vehicle photos.
-  // JSON-LD is preferred but not all cars.com detail pages include it.
-  // Collect all valid candidates, then trim the tail (recommendation
-  // section photos are always last) and sample evenly across the gallery.
-  const imgPhotos = [];
-  $('img').each((_, el) => {
-    const node = $(el);
-    for (const attr of ['src', 'data-src', 'data-original', 'data-lazy-src', 'data-hi-res-src']) {
-      const url = collect(node.attr(attr));
-      if (url && url.includes('cstatic-images.com') && url.includes('/in/v2/')) {
-        imgPhotos.push(url);
-        break;
-      }
-    }
-  });
-
-  // Drop the last 15% — "Similar Vehicles" section photos are always at the end
-  const trimmed = imgPhotos.length > 10
-    ? imgPhotos.slice(0, Math.ceil(imgPhotos.length * 0.85))
-    : imgPhotos;
-  return samplePhotos(trimmed, MAX_PHOTOS);
+  // No JSON-LD photos = no gallery on this listing. Return empty.
+  // The <img> fallback was grabbing "similar vehicles" section photos
+  // and assigning them to the wrong car. Better to show "Coming Soon"
+  // than wrong photos. The next sync will pick up photos if the dealer adds them.
+  return [];
 }
 
 function isNetworkError(error) {
