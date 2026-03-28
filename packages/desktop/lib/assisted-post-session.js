@@ -179,22 +179,69 @@ class AssistedPostSession {
     if (this._isEditMode()) {
       const listingId = this._editListingId || this._extractListingId(this.editListingUrl);
 
-      if (!listingId) {
-        // No valid listing ID — the URL captured at post time was the selling
-        // dashboard, not the actual listing. Can't edit without the listing ID.
-        this.log(`No listing ID found in URL: ${this.editListingUrl}`);
+      if (listingId) {
+        const targetUrl = this._buildEditUrl(listingId);
+        this._editListingId = listingId;
+        this.log(`Editing existing listing: ${targetUrl}`);
+
+        this._setStatus('navigating', 'Opening Marketplace edit form...');
+        await this.poster.page.goto(targetUrl, {
+          waitUntil: 'networkidle2',
+          timeout: 60000,
+        });
+        await this._delay(2500);
+        await this.poster.takeScreenshot('debug_edit_listing_loaded');
+        return;
+      }
+
+      // No listing ID — find the listing on the selling page by title
+      this.log(`No listing ID in URL: ${this.editListingUrl} — searching selling page`);
+      this._setStatus('navigating', 'Searching your listings for this vehicle...');
+
+      await this.poster.page.goto('https://www.facebook.com/marketplace/you/selling', {
+        waitUntil: 'networkidle2',
+        timeout: 30000,
+      });
+      await this._delay(3000);
+
+      const searchTitle = `${this.vehicle.year} ${this.vehicle.make} ${this.vehicle.model}`.toLowerCase();
+      const found = await this.poster.page.evaluate((title) => {
+        // Look for listing links that match the vehicle title
+        const links = document.querySelectorAll('a[href*="/item/"]');
+        for (const link of links) {
+          const text = (link.textContent || '').toLowerCase();
+          if (text.includes(title)) {
+            const href = link.href || link.getAttribute('href');
+            const match = href.match(/\/item\/(\d+)/);
+            if (match) return match[1];
+          }
+        }
+        // Also try broader matching — just year + make
+        const shortTitle = title.split(' ').slice(0, 2).join(' ');
+        for (const link of document.querySelectorAll('a[href*="/item/"]')) {
+          const text = (link.textContent || '').toLowerCase();
+          if (text.includes(shortTitle)) {
+            const href = link.href || link.getAttribute('href');
+            const match = href.match(/\/item\/(\d+)/);
+            if (match) return match[1];
+          }
+        }
+        return null;
+      }, searchTitle);
+
+      if (!found) {
+        await this.poster.takeScreenshot('debug_edit_listing_not_found');
         throw new Error(
-          'Cannot find this listing on Facebook. The listing URL was not captured correctly. ' +
-          'Please update the price manually on Facebook Marketplace, or delete and re-post the vehicle.'
+          `Could not find "${this.vehicle.year} ${this.vehicle.make} ${this.vehicle.model}" on your selling page. ` +
+          'The listing may have been removed from Facebook.'
         );
       }
 
-      const targetUrl = this._buildEditUrl(listingId);
-      this._editListingId = listingId;
-      this.log(`Editing existing listing: ${targetUrl}`);
+      this._editListingId = found;
+      const editUrl = this._buildEditUrl(found);
+      this.log(`Found listing ${found} on selling page, navigating to edit: ${editUrl}`);
 
-      this._setStatus('navigating', 'Opening Marketplace edit form...');
-      await this.poster.page.goto(targetUrl, {
+      await this.poster.page.goto(editUrl, {
         waitUntil: 'networkidle2',
         timeout: 60000,
       });
