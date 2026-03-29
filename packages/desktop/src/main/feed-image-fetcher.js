@@ -174,24 +174,28 @@ function extractPhotos(html) {
     return upgraded;
   }
 
-  // 1. JSON-LD — preferred source (gallery photos only, no "similar vehicles")
-  const jsonLdPhotos = [];
-  $('script[type="application/ld+json"]').each((_, el) => {
-    try {
-      const data = JSON.parse($(el).contents().text());
-      const images = Array.isArray(data.image) ? data.image : data.image ? [data.image] : [];
-      for (const img of images) {
-        const url = collect(typeof img === 'string' ? img : img?.url || img?.contentUrl);
-        if (url) jsonLdPhotos.push(url);
-      }
-    } catch {}
-  });
+  // Extract ONLY from .primary-grid (the vehicle gallery container).
+  const galleryPhotos = [];
+  const gallery = $('.primary-grid');
 
-  if (jsonLdPhotos.length > 0) {
-    return samplePhotos(jsonLdPhotos, MAX_PHOTOS);
+  if (gallery.length > 0) {
+    gallery.find('img').each((_, el) => {
+      const node = $(el);
+      for (const attr of ['src', 'data-src', 'data-original', 'data-lazy-src', 'data-hi-res-src']) {
+        const url = collect(node.attr(attr));
+        if (url) {
+          galleryPhotos.push(url);
+          break;
+        }
+      }
+    });
   }
 
-  // No JSON-LD = no gallery. Return empty. "Coming Soon" is better than wrong photos.
+  if (galleryPhotos.length > 0) {
+    return samplePhotos(galleryPhotos, MAX_PHOTOS);
+  }
+
+  // No gallery = no photos. "Coming Soon" until dealer adds them.
   return [];
 }
 

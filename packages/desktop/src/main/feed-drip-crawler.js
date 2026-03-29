@@ -205,36 +205,36 @@ function extractPhotos(html) {
     if (!src || !isVehiclePhoto(src)) return null;
     const upgraded = upgradeSize(src.trim());
     if (!upgraded || seen.has(upgraded)) return null;
+    if (!upgraded.includes('cstatic-images.com') || !upgraded.includes('/in/v2/')) return null;
     seen.add(upgraded);
     return upgraded;
   }
 
-  // 1. JSON-LD structured data — preferred source (gallery photos only)
-  const jsonLdPhotos = [];
-  $('script[type="application/ld+json"]').each((_, el) => {
-    try {
-      const data = JSON.parse($(el).contents().text());
-      const images = Array.isArray(data.image) ? data.image : data.image ? [data.image] : [];
-      for (const img of images) {
-        const url = collect(typeof img === 'string' ? img : img?.url || img?.contentUrl);
-        if (url) jsonLdPhotos.push(url);
+  // Extract photos ONLY from the .primary-grid container (the vehicle gallery).
+  // This is the only reliable source — "Similar Vehicles" sections are in
+  // separate containers and must never be included.
+  const galleryPhotos = [];
+  const gallery = $('.primary-grid');
+
+  if (gallery.length > 0) {
+    gallery.find('img').each((_, el) => {
+      const node = $(el);
+      for (const attr of ['src', 'data-src', 'data-original', 'data-lazy-src', 'data-hi-res-src']) {
+        const url = collect(node.attr(attr));
+        if (url) {
+          galleryPhotos.push(url);
+          break;
+        }
       }
-    } catch {}
-  });
-
-  // Filter to cstatic vehicle photos
-  const jsonLdVehicle = jsonLdPhotos.filter(u => u.includes('cstatic-images.com') && u.includes('/in/v2/'));
-  if (jsonLdVehicle.length > 0) {
-    return samplePhotos(jsonLdVehicle, MAX_PHOTOS);
-  }
-  if (jsonLdPhotos.length > 0) {
-    return samplePhotos(jsonLdPhotos, MAX_PHOTOS);
+    });
   }
 
-  // No JSON-LD photos = no gallery on this listing. Return empty.
-  // The <img> fallback was grabbing "similar vehicles" section photos
-  // and assigning them to the wrong car. Better to show "Coming Soon"
-  // than wrong photos. The next sync will pick up photos if the dealer adds them.
+  if (galleryPhotos.length > 0) {
+    return samplePhotos(galleryPhotos, MAX_PHOTOS);
+  }
+
+  // No .primary-grid or no images in it = listing has no photos.
+  // "Coming Soon" is correct. Drip crawler will retry later.
   return [];
 }
 
