@@ -603,8 +603,8 @@ class FacebookPoster {
    * @param {string} colorInput - The vehicle's color (e.g., "Oxford White", "Midnight Blue Metallic")
    * @returns {string} The closest FB dropdown color value
    */
-  async matchColorToFB(colorInput) {
-    if (!colorInput) return 'Black';
+  matchColorToFB(colorInput) {
+    if (!colorInput) return 'Grey';
 
     const fbColors = [
       'Black', 'Blue', 'Brown', 'Gold', 'Green', 'Grey', 'Pink', 'Purple',
@@ -612,54 +612,65 @@ class FacebookPoster {
       'Tan', 'Beige', 'Burgundy', 'Turquoise'
     ];
 
-    // Check for exact match first (case-insensitive)
+    // Exact match
     const exact = fbColors.find(c => c.toLowerCase() === colorInput.toLowerCase().trim());
     if (exact) return exact;
 
-    // Fast local heuristic mapping (works without the cloud API)
-    const normalized = normalizeUiText(colorInput);
-    const colorKeywords = [
-      { key: 'off white', value: 'Off white' },
-      { key: 'charcoal', value: 'Charcoal' },
-      { key: 'burgundy', value: 'Burgundy' },
-      { key: 'turquoise', value: 'Turquoise' },
-      { key: 'beige', value: 'Beige' },
-      { key: 'tan', value: 'Tan' },
-      { key: 'silver', value: 'Silver' },
-      { key: 'gray', value: 'Grey' },
-      { key: 'grey', value: 'Grey' },
-      { key: 'white', value: 'White' },
-      { key: 'black', value: 'Black' },
-      { key: 'blue', value: 'Blue' },
-      { key: 'red', value: 'Red' },
-      { key: 'green', value: 'Green' },
-      { key: 'yellow', value: 'Yellow' },
-      { key: 'orange', value: 'Orange' },
-      { key: 'gold', value: 'Gold' },
-      { key: 'brown', value: 'Brown' },
-      { key: 'purple', value: 'Purple' },
-      { key: 'pink', value: 'Pink' },
+    const lower = colorInput.toLowerCase().trim();
+
+    // Comprehensive automotive color → FB color mapping.
+    // Ordered by specificity — multi-word matches first, single-word last.
+    const colorMap = [
+      // Off white / cream / ivory / pearl white
+      { patterns: ['off white', 'ivory', 'cream', 'pearl white', 'tri-coat white', 'pristine white', 'ceramic'], fb: 'Off white' },
+      // Charcoal / dark grey
+      { patterns: ['charcoal', 'dark gray', 'dark grey', 'graphite', 'dark steel', 'asphalt', 'granite', 'shadow'], fb: 'Charcoal' },
+      // Burgundy / maroon / wine
+      { patterns: ['burgundy', 'maroon', 'wine', 'merlot', 'cabernet', 'sangria', 'basque red'], fb: 'Burgundy' },
+      // Beige / champagne / sand
+      { patterns: ['beige', 'champagne', 'sand', 'desert', 'sahara', 'cinnamon', 'mocha', 'sandstone'], fb: 'Beige' },
+      // Tan / khaki / bronze
+      { patterns: ['tan', 'khaki', 'camel', 'bronze'], fb: 'Tan' },
+      // Gold
+      { patterns: ['gold', 'amber', 'butterscotch'], fb: 'Gold' },
+      // Turquoise / teal / aqua
+      { patterns: ['turquoise', 'teal', 'aqua', 'cyan'], fb: 'Turquoise' },
+      // Silver / platinum / steel / metallic grey
+      { patterns: ['silver', 'platinum', 'steel', 'metallic gray', 'metallic grey', 'titanium', 'pewter', 'lunar', 'satin', 'sonic gray', 'sonic grey', 'modern steel', 'celestite'], fb: 'Silver' },
+      // Grey / gray / meteorite / slate
+      { patterns: ['gray', 'grey', 'meteorite', 'slate', 'magnetic', 'cement', 'gunmetal', 'harbor', 'urban', 'stone'], fb: 'Grey' },
+      // Black BEFORE White — "Crystal Black Pearl" should be Black not White
+      { patterns: ['black', 'ebony', 'onyx', 'obsidian', 'jet', 'raven', 'narvik', 'agate', 'night', 'midnight'], fb: 'Black' },
+      // Blue BEFORE White — "Blue Lagoon Pearl" should be Blue not White
+      { patterns: ['blue', 'denim', 'navy', 'sapphire', 'cobalt', 'lagoon', 'indigo', 'nautical', 'canyon river', 'fathom', 'atlas', 'patriot', 'ocean', 'velocity blue', 'aegean'], fb: 'Blue' },
+      // Red BEFORE White — "Radiant Red Pearl" should be Red not White
+      { patterns: ['red', 'ruby', 'crimson', 'rallye', 'radiant', 'scarlet', 'flame', 'cherry', 'candy', 'rapid', 'barcelona', 'torred', 'vermilion', 'mars', 'cayenne'], fb: 'Red' },
+      // White — pearl/arctic/alpine AFTER primary colors so compound names resolve correctly
+      { patterns: ['white', 'pearl', 'arctic', 'alpine', 'summit', 'oxford', 'polar', 'snowflake', 'glacier', 'blizzard', 'wind chill', 'carrara'], fb: 'White' },
+      // Orange / mango / inferno / solar / blaze
+      { patterns: ['orange', 'mango', 'inferno', 'blaze', 'solar flare', 'tangerine', 'copper', 'paprika', 'sunset'], fb: 'Orange' },
+      // Green / olive / forest / emerald / army / jungle
+      { patterns: ['green', 'olive', 'forest', 'emerald', 'army', 'jungle', 'sarge', 'nori', 'jade', 'lime', 'mint', 'sage', 'british racing', 'undergrowth'], fb: 'Green' },
+      // Yellow / citrus / sunburst
+      { patterns: ['yellow', 'citrus', 'sunburst', 'lemon', 'canary', 'stinger', 'solis'], fb: 'Yellow' },
+      // Brown / espresso / mocha / canyon / umber / java / hickory
+      { patterns: ['brown', 'espresso', 'java', 'hickory', 'umber', 'walnut', 'cocoa', 'kodiak', 'burnished'], fb: 'Brown' },
+      // Purple / plum / violet / amethyst
+      { patterns: ['purple', 'plum', 'violet', 'amethyst', 'grape', 'indigo', 'hellraisin', 'frostbite'], fb: 'Purple' },
+      // Pink / magenta / fuchsia
+      { patterns: ['pink', 'magenta', 'fuchsia', 'rose'], fb: 'Pink' },
     ];
-    const heuristic = colorKeywords.find(c => normalized.includes(c.key));
-    if (heuristic) {
-      this.log(` Color heuristic match: "${colorInput}" -> "${heuristic.value}"`);
-      return heuristic.value;
+
+    for (const { patterns, fb } of colorMap) {
+      if (patterns.some(p => lower.includes(p))) {
+        this.log(` Color mapped: "${colorInput}" -> "${fb}"`);
+        return fb;
+      }
     }
 
-    const response = await this._cloudPost('/api/ai/match-color', {
-      color: colorInput,
-      options: fbColors,
-    });
-    const match = typeof response?.match === 'string' ? response.match.trim() : '';
-    const validated = fbColors.find(c => c.toLowerCase() === match.toLowerCase());
-    if (validated) {
-      this.log(` Color matched: "${colorInput}" -> "${validated}"`);
-      return validated;
-    }
-
-    this.log(` Cloud color match unavailable for "${colorInput}", defaulting to Black`);
-    return 'Black';
-
+    // Nothing matched — default to Grey (most neutral, better than Black which looks intentional)
+    this.log(` Color unmatched: "${colorInput}", defaulting to Grey`);
+    return 'Grey';
   }
 
   /**
@@ -1372,7 +1383,7 @@ class FacebookPoster {
     // --- DROPDOWN: Exterior colour (most types except Other) ---
     if (hasDropdown('Exterior colour', 'Exterior color')) {
       this.log('Setting Exterior color...');
-      const extColor = await this.matchColorToFB(vehicle.exteriorColor || vehicle.exterior_color || vehicle.color);
+      const extColor = this.matchColorToFB(vehicle.exteriorColor || vehicle.exterior_color || vehicle.color);
       if (await this.selectDropdown(['Exterior colour', 'Exterior color'], extColor)) {
         fieldsFound++;
       } else { fieldsMissed++; }
@@ -1382,7 +1393,9 @@ class FacebookPoster {
     // --- DROPDOWN: Interior colour (Car/van, Power sport, Motorhome, Trailer, Boat, Commercial) ---
     if (hasDropdown('Interior colour', 'Interior color')) {
       this.log('Setting Interior color...');
-      const intColor = await this.matchColorToFB(vehicle.interiorColor || vehicle.interior_color || 'Black');
+      // Interior color isn't in the feed data — use Black or Grey as safe defaults
+      // (most car interiors are black, grey, or beige)
+      const intColor = this.matchColorToFB(vehicle.interiorColor || vehicle.interior_color || 'Black');
       if (await this.selectDropdown(['Interior colour', 'Interior color'], intColor)) {
         fieldsFound++;
       } else { fieldsMissed++; }
