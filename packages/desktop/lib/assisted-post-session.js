@@ -88,7 +88,7 @@ class AssistedPostSession {
   }
 
   _buildEditUrl(listingId) {
-    return `https://www.facebook.com/marketplace/edit/${listingId}/`;
+    return `https://www.facebook.com/marketplace/edit/?listing_id=${listingId}`;
   }
 
   _buildItemUrl(listingId) {
@@ -201,7 +201,7 @@ class AssistedPostSession {
       this.log(`No listing ID — searching selling page for "${this.vehicle.year} ${this.vehicle.make} ${this.vehicle.model}" at $${postedPrice}`);
       this._setStatus('navigating', 'Searching your listings for this vehicle...');
 
-      await this.poster.page.goto('https://www.facebook.com/marketplace/you/selling', {
+      await this.poster.page.goto('https://www.facebook.com/marketplace/you/dashboard', {
         waitUntil: 'networkidle2',
         timeout: 30000,
       });
@@ -215,68 +215,66 @@ class AssistedPostSession {
 
       const searchTitle = `${this.vehicle.year} ${this.vehicle.make} ${this.vehicle.model}`.toLowerCase();
       const priceStr = postedPrice ? String(Math.round(postedPrice)) : null;
+      const formattedPrice = postedPrice ? Number(Math.round(postedPrice)).toLocaleString() : null;
 
-      const found = await this.poster.page.evaluate((title, price) => {
-        const links = document.querySelectorAll('a[href*="/item/"]');
+      // On the dashboard, listings are cards with span text — not links.
+      // We need to: 1) find the card by title+price, 2) click it, 3) grab the edit link that appears.
 
-        // Pass 1: exact match — title AND price both present in the link text
-        if (price) {
-          for (const link of links) {
-            const text = (link.textContent || '').toLowerCase();
-            // Price on FB shows as "$13,991" — check for the digits
-            if (text.includes(title) && text.includes(price)) {
-              const href = link.href || link.getAttribute('href');
-              const match = href.match(/\/item\/(\d+)/);
-              if (match) return match[1];
+      // Step 1: Click the matching listing card
+      const clicked = await this.poster.page.evaluate((title, price, formatted) => {
+        const spans = document.querySelectorAll('span');
+        // Find the title span
+        for (const span of spans) {
+          if (span.textContent.trim().toLowerCase() !== title) continue;
+          // Found the title — walk up to the card container
+          let card = span;
+          for (let i = 0; i < 10; i++) {
+            card = card.parentElement;
+            if (!card) break;
+            const cardText = card.textContent || '';
+            // Verify price is in this card (if we have one)
+            if (price && !cardText.includes(price) && (!formatted || !cardText.includes(formatted))) continue;
+            // Check if this looks like a listing card (has action buttons)
+            if (cardText.includes('Mark as sold') || cardText.includes('Renew')) {
+              // Click the title's clickable parent to open the detail panel
+              const clickable = span.closest('[role="button"]');
+              if (clickable) { clickable.click(); return true; }
             }
           }
-          // Also try with formatted price (e.g., "13,991")
-          const formatted = Number(price).toLocaleString();
-          for (const link of links) {
-            const text = (link.textContent || '').toLowerCase();
-            if (text.includes(title) && text.includes(formatted.toLowerCase())) {
-              const href = link.href || link.getAttribute('href');
-              const match = href.match(/\/item\/(\d+)/);
-              if (match) return match[1];
-            }
-          }
         }
+        return false;
+      }, searchTitle, priceStr, formattedPrice);
 
-        // Pass 2: title only (if price match failed or no price)
-        for (const link of links) {
-          const text = (link.textContent || '').toLowerCase();
-          if (text.includes(title)) {
-            const href = link.href || link.getAttribute('href');
-            const match = href.match(/\/item\/(\d+)/);
-            if (match) return match[1];
-          }
-        }
-
-        // Pass 3: year + make only (broadest match)
-        const shortTitle = title.split(' ').slice(0, 2).join(' ');
-        for (const link of links) {
-          const text = (link.textContent || '').toLowerCase();
-          if (text.includes(shortTitle)) {
-            const href = link.href || link.getAttribute('href');
-            const match = href.match(/\/item\/(\d+)/);
-            if (match) return match[1];
-          }
-        }
-
-        return null;
-      }, searchTitle, priceStr);
-
-      if (!found) {
+      if (!clicked) {
         await this.poster.takeScreenshot('debug_edit_listing_not_found');
         throw new Error(
-          `Could not find "${this.vehicle.year} ${this.vehicle.make} ${this.vehicle.model}" at $${postedPrice} on your selling page. ` +
+          `Could not find "${this.vehicle.year} ${this.vehicle.make} ${this.vehicle.model}" at $${postedPrice} on your dashboard. ` +
           'The listing may have been removed from Facebook.'
         );
       }
 
-      this._editListingId = found;
-      const editUrl = this._buildEditUrl(found);
-      this.log(`Found listing ${found} on selling page, navigating to edit: ${editUrl}`);
+      // Step 2: Wait for the edit link to appear after clicking
+      await this._delay(3000);
+
+      // Step 3: Grab the edit link with listing_id
+      const listingIdFromEdit = await this.poster.page.evaluate(() => {
+        const editLink = document.querySelector('a[href*="/marketplace/edit/"]');
+        if (!editLink) return null;
+        const href = editLink.href || editLink.getAttribute('href');
+        const match = href.match(/listing_id=(\d+)/);
+        return match ? match[1] : null;
+      });
+
+      if (!listingIdFromEdit) {
+        await this.poster.takeScreenshot('debug_edit_link_not_found');
+        throw new Error(
+          'Found the listing but could not get the edit link. Please try again.'
+        );
+      }
+
+      this._editListingId = listingIdFromEdit;
+      const editUrl = this._buildEditUrl(listingIdFromEdit);
+      this.log(`Found listing ${listingIdFromEdit} via dashboard click, navigating to edit: ${editUrl}`);
 
       await this.poster.page.goto(editUrl, {
         waitUntil: 'networkidle2',
