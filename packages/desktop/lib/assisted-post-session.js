@@ -151,6 +151,24 @@ class AssistedPostSession {
 
       await this._scrollToActionArea();
 
+      // Scroll to the action button so the user can see it
+      await this.poster.page.evaluate(() => {
+        // Look for Save, Next, Publish, Update buttons
+        const buttons = document.querySelectorAll('[role="button"], button');
+        for (const btn of buttons) {
+          const text = (btn.textContent || '').trim().toLowerCase();
+          if ((text === 'save' || text === 'next' || text === 'publish' || text === 'update'
+              || text === 'save draft' || text === 'update listing')
+              && btn.offsetParent !== null) {
+            btn.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            return;
+          }
+        }
+        // Fallback: scroll to bottom
+        window.scrollTo(0, document.body.scrollHeight);
+      });
+      await this._delay(500);
+
       if (this._isEditMode()) {
         this._setStatus('awaiting_publish', 'Listing updated. Review the changes and click "Save" when ready.');
       } else {
