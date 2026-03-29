@@ -374,6 +374,98 @@ async function fetchFeedHtmlWithBrowser(url, options = {}) {
   }
 }
 
+/**
+ * Fetch photos for vehicles using a hidden BrowserWindow.
+ * Much faster than the drip crawler (net module) because JS executes
+ * and .primary-grid images load properly.
+ *
+ * @param {Array<{id: string, dealerUrl: string}>} vehicles
+ * @param {string} serverUrl
+ * @param {string} accessToken
+ */
+async function fetchPhotosWithBrowser(vehicles, serverUrl, accessToken) {
+  if (!vehicles || vehicles.length === 0) return { fetched: 0 };
+
+  const partition = `photo-fetch-${Date.now()}`;
+  const ses = session.fromPartition(partition, { cache: false });
+  await ses.setUserAgent(FEED_FETCH_UA);
+
+  const win = new BrowserWindow({
+    show: false,
+    width: 1920,
+    height: 1080,
+    webPreferences: { nodeIntegration: false, contextIsolation: true, session: ses },
+  });
+
+  let fetched = 0;
+  try {
+    for (const vehicle of vehicles) {
+      if (!vehicle.dealerUrl) continue;
+      try {
+        await win.loadURL(vehicle.dealerUrl);
+        // Wait for JS to render the gallery
+        await delay(3000);
+        // Scroll to trigger lazy loading
+        await win.webContents.executeJavaScript('window.scrollTo(0, document.body.scrollHeight)');
+        await delay(1000);
+        await win.webContents.executeJavaScript('window.scrollTo(0, 0)');
+        await delay(500);
+
+        const html = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
+
+        // Extract photos from .primary-grid only
+        const cheerio = require('cheerio');
+        const $ = cheerio.load(html);
+        const seen = new Set();
+        const photos = [];
+
+        $('.primary-grid img').each((_, el) => {
+          const node = $(el);
+          const src = node.attr('src') || node.attr('data-src') || node.attr('data-original') || node.attr('data-lazy-src');
+          if (!src || !src.includes('cstatic-images.com') || !src.includes('/in/v2/')) return;
+          const upgraded = src.replace(/\/(?:small|medium|large|xlarge)\/in\/v2\//i, '/xxlarge/in/v2/');
+          if (seen.has(upgraded)) return;
+          seen.add(upgraded);
+          photos.push(upgraded);
+        });
+
+        if (photos.length === 0) continue;
+
+        // Sample 20 from beginning/middle/end
+        let sampled = photos;
+        if (photos.length > 20) {
+          sampled = [];
+          const step = photos.length / 20;
+          for (let i = 0; i < 20; i++) {
+            sampled.push(photos[Math.floor(i * step)]);
+          }
+        }
+
+        // Save to API
+        const url = new URL(`/api/vehicles/${vehicle.id}`, serverUrl).toString();
+        await fetch(url, {
+          method: 'PUT',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ photos: sampled }),
+        });
+
+        fetched++;
+        console.log(`[photo-fetch] ${vehicle.year || ''} ${vehicle.make || ''} ${vehicle.model || ''}: ${sampled.length} photos`);
+      } catch (err) {
+        console.warn(`[photo-fetch] Failed for ${vehicle.dealerUrl}: ${err.message}`);
+      }
+
+      // Small delay between vehicles
+      await delay(1500);
+    }
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+  }
+
+  console.log(`[photo-fetch] Done: ${fetched}/${vehicles.length} vehicles got photos`);
+  return { fetched };
+}
+
 function ensureAgentInfrastructure() {
   const spId = getSalespersonId();
 
@@ -871,4 +963,4 @@ async function cleanupAdapters() {
   console.log('[ipc] Adapter cleanup complete');
 }
 
-module.exports = { registerIpcHandlers, cleanupAdapters, fetchFeedHtmlWithBrowser };
+module.exports = { registerIpcHandlers, cleanupAdapters, fetchFeedHtmlWithBrowser, fetchPhotosWithBrowser };

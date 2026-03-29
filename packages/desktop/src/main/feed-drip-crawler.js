@@ -38,15 +38,15 @@ const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 // --- Timing ---
-// Base delays get jitter applied (0.5x to 1.5x), so 5s becomes 2.5–7.5s
-const BASE_BETWEEN_VEHICLES_MS = 5_000;
-const BETWEEN_BATCHES_MS = 2 * 60_000;      // 2 min between batches
-const IDLE_CHECK_MS = 10 * 60_000;           // 10 min when nothing to do
-const FETCH_TIMEOUT_MS = 25_000;             // 25s per request
-const NETWORK_ERROR_PAUSE_MS = 30_000;       // 30s pause after network error
-const BATCH_SIZE = 10;
+// Base delays get jitter applied (0.5x to 1.5x), so 2s becomes 1–3s
+const BASE_BETWEEN_VEHICLES_MS = 2_000;
+const BETWEEN_BATCHES_MS = 30_000;           // 30s between batches
+const IDLE_CHECK_MS = 5 * 60_000;            // 5 min when nothing to do
+const FETCH_TIMEOUT_MS = 20_000;             // 20s per request
+const NETWORK_ERROR_PAUSE_MS = 15_000;       // 15s pause after network error
+const BATCH_SIZE = 25;
 const MAX_CONSECUTIVE_FAILURES = 8;
-const SESSION_ROTATE_EVERY = 20;             // fresh session every N vehicles
+const SESSION_ROTATE_EVERY = 30;             // fresh session every N vehicles
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

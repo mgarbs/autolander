@@ -1,7 +1,7 @@
 'use strict';
 
 const { getMainWindow } = require('./window-manager');
-const { fetchFeedHtmlWithBrowser } = require('./ipc-handlers');
+const { fetchFeedHtmlWithBrowser, fetchPhotosWithBrowser } = require('./ipc-handlers');
 const { enqueueFeedImageFetch, stopFeedImageFetch } = require('./feed-image-fetcher');
 const { startDripCrawler, stopDripCrawler } = require('./feed-drip-crawler');
 
