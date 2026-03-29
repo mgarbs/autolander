@@ -194,8 +194,11 @@ class AssistedPostSession {
         return;
       }
 
-      // No listing ID — find the listing on the selling page by title
-      this.log(`No listing ID in URL: ${this.editListingUrl} — searching selling page`);
+      // No listing ID — find the listing on the selling page by title + price
+      const postedPrice = this.vehicle.listings?.facebook_marketplace?.postedPrice
+        || this.vehicle.fbPostedPrice
+        || this.vehicle.price;
+      this.log(`No listing ID — searching selling page for "${this.vehicle.year} ${this.vehicle.make} ${this.vehicle.model}" at $${postedPrice}`);
       this._setStatus('navigating', 'Searching your listings for this vehicle...');
 
       await this.poster.page.goto('https://www.facebook.com/marketplace/you/selling', {
@@ -204,10 +207,42 @@ class AssistedPostSession {
       });
       await this._delay(3000);
 
+      // Scroll down to load more listings
+      for (let i = 0; i < 3; i++) {
+        await this.poster.page.evaluate(() => window.scrollBy(0, 1000));
+        await this._delay(1000);
+      }
+
       const searchTitle = `${this.vehicle.year} ${this.vehicle.make} ${this.vehicle.model}`.toLowerCase();
-      const found = await this.poster.page.evaluate((title) => {
-        // Look for listing links that match the vehicle title
+      const priceStr = postedPrice ? String(Math.round(postedPrice)) : null;
+
+      const found = await this.poster.page.evaluate((title, price) => {
         const links = document.querySelectorAll('a[href*="/item/"]');
+
+        // Pass 1: exact match — title AND price both present in the link text
+        if (price) {
+          for (const link of links) {
+            const text = (link.textContent || '').toLowerCase();
+            // Price on FB shows as "$13,991" — check for the digits
+            if (text.includes(title) && text.includes(price)) {
+              const href = link.href || link.getAttribute('href');
+              const match = href.match(/\/item\/(\d+)/);
+              if (match) return match[1];
+            }
+          }
+          // Also try with formatted price (e.g., "13,991")
+          const formatted = Number(price).toLocaleString();
+          for (const link of links) {
+            const text = (link.textContent || '').toLowerCase();
+            if (text.includes(title) && text.includes(formatted.toLowerCase())) {
+              const href = link.href || link.getAttribute('href');
+              const match = href.match(/\/item\/(\d+)/);
+              if (match) return match[1];
+            }
+          }
+        }
+
+        // Pass 2: title only (if price match failed or no price)
         for (const link of links) {
           const text = (link.textContent || '').toLowerCase();
           if (text.includes(title)) {
@@ -216,9 +251,10 @@ class AssistedPostSession {
             if (match) return match[1];
           }
         }
-        // Also try broader matching — just year + make
+
+        // Pass 3: year + make only (broadest match)
         const shortTitle = title.split(' ').slice(0, 2).join(' ');
-        for (const link of document.querySelectorAll('a[href*="/item/"]')) {
+        for (const link of links) {
           const text = (link.textContent || '').toLowerCase();
           if (text.includes(shortTitle)) {
             const href = link.href || link.getAttribute('href');
@@ -226,13 +262,14 @@ class AssistedPostSession {
             if (match) return match[1];
           }
         }
+
         return null;
-      }, searchTitle);
+      }, searchTitle, priceStr);
 
       if (!found) {
         await this.poster.takeScreenshot('debug_edit_listing_not_found');
         throw new Error(
-          `Could not find "${this.vehicle.year} ${this.vehicle.make} ${this.vehicle.model}" on your selling page. ` +
+          `Could not find "${this.vehicle.year} ${this.vehicle.make} ${this.vehicle.model}" at $${postedPrice} on your selling page. ` +
           'The listing may have been removed from Facebook.'
         );
       }

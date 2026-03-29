@@ -255,7 +255,8 @@ class FbPosterAdapter {
       try {
         const page = this.assistedSession.poster.page;
         const title = `${vehicle.year} ${vehicle.make} ${vehicle.model}`.toLowerCase();
-        console.log(`[fb-poster-adapter] Searching selling page for "${title}"...`);
+        const priceStr = vehicle.price ? String(Math.round(vehicle.price)) : null;
+        console.log(`[fb-poster-adapter] Searching selling page for "${title}" at $${priceStr}...`);
 
         await page.goto('https://www.facebook.com/marketplace/you/selling', {
           waitUntil: 'networkidle2',
@@ -263,21 +264,41 @@ class FbPosterAdapter {
         });
         await new Promise(r => setTimeout(r, 3000));
 
-        // Scrape listing links from the selling page
-        const found = await page.evaluate((searchTitle) => {
+        // Scroll to load more listings
+        for (let i = 0; i < 3; i++) {
+          await page.evaluate(() => window.scrollBy(0, 1000));
+          await new Promise(r => setTimeout(r, 1000));
+        }
+
+        // Match by title + price for accuracy
+        const found = await page.evaluate((searchTitle, price) => {
           const links = document.querySelectorAll('a[href*="/item/"]');
+
+          // Pass 1: title + price
+          if (price) {
+            const formatted = Number(price).toLocaleString();
+            for (const link of links) {
+              const text = (link.textContent || '').toLowerCase();
+              if (text.includes(searchTitle) && (text.includes(price) || text.includes(formatted.toLowerCase()))) {
+                const href = link.href || link.getAttribute('href');
+                const m = href.match(/\/item\/(\d+)/);
+                if (m) return { listingId: m[1], listingUrl: `https://www.facebook.com/marketplace/item/${m[1]}/` };
+              }
+            }
+          }
+
+          // Pass 2: title only
           for (const link of links) {
             const text = (link.textContent || '').toLowerCase();
             if (text.includes(searchTitle)) {
               const href = link.href || link.getAttribute('href');
-              const match = href.match(/\/item\/(\d+)/);
-              if (match) {
-                return { listingId: match[1], listingUrl: `https://www.facebook.com/marketplace/item/${match[1]}/` };
-              }
+              const m = href.match(/\/item\/(\d+)/);
+              if (m) return { listingId: m[1], listingUrl: `https://www.facebook.com/marketplace/item/${m[1]}/` };
             }
           }
+
           return null;
-        }, title);
+        }, title, priceStr);
 
         if (found) {
           fbListingUrl = found.listingUrl;
