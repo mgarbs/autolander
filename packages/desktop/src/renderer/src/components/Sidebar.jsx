@@ -17,7 +17,6 @@ import { useAuth } from '../context/AuthContext';
 
 const navItems = [
   { to: '/sales', label: 'Sales Hub', icon: LayoutDashboard },
-  { to: '/manager', label: 'Manager Center', icon: ShieldCheck },
   { to: '/inventory', label: 'Inventory Management', icon: CarFront },
   { to: '/appointments', label: 'Appointments', icon: Calendar },
   { to: '/post', label: 'Post to Market', icon: Send },
