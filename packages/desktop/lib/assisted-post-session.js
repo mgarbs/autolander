@@ -327,10 +327,34 @@ class AssistedPostSession {
     this._setStatus('filling_form', 'AI is updating editable listing details...');
 
     if (shouldUpdatePrice && this.vehicle?.price !== undefined && this.vehicle?.price !== null) {
-      await this._updateFieldValue(['Price'], this.vehicle.price.toString(), {
-        fieldName: 'price',
-        numeric: true,
-      });
+      const newPrice = this.vehicle.price.toString();
+      this.log(`Updating price to ${newPrice}...`);
+
+      // FB's price input is React-controlled — keyboard input doesn't stick.
+      // Use the native value setter + React event dispatch instead.
+      const priceUpdated = await this.poster.page.evaluate((price) => {
+        const labels = document.querySelectorAll('label');
+        for (const label of labels) {
+          if (!label.textContent.trim().startsWith('Price')) continue;
+          const input = label.querySelector('input');
+          if (!input) continue;
+
+          const setter = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, 'value'
+          ).set;
+          setter.call(input, price);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          return input.value;
+        }
+        return null;
+      }, newPrice);
+
+      if (priceUpdated) {
+        this.log(`Price updated to ${priceUpdated}`);
+      } else {
+        this.log('WARNING: Could not find or update price field');
+      }
     }
 
     if (shouldUpdateDescription) {
