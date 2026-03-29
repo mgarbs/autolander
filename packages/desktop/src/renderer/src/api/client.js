@@ -225,7 +225,7 @@ function toInventoryFormat(v) {
 export async function getStats({ signal } = {}) {
   const [pipeline, vehiclesRes, appointmentsRes] = await Promise.all([
     fetchJSON('/api/conversations/pipeline', { signal }),
-    fetchJSON('/api/vehicles', { signal }),
+    fetchJSON('/api/vehicles?status=ACTIVE', { signal }),
     fetchJSON('/api/appointments', { signal }),
   ]);
   const appts = appointmentsRes.appointments || [];

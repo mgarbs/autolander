@@ -175,6 +175,10 @@ export default function Settings() {
 
   const handleSaveFeed = async () => {
     if (!feedUrl.trim()) { setFeedMsg({ type: 'error', text: 'Enter a feed URL' }); return; }
+    if (!feedUrl.trim().toLowerCase().includes('cars.com')) {
+      setFeedMsg({ type: 'error', text: 'Only Cars.com dealer inventory URLs are supported. Example: https://www.cars.com/dealers/1234/your-dealer/inventory/' });
+      return;
+    }
     setFeedSaving(true);
     setFeedMsg(null);
     try {
@@ -543,7 +547,7 @@ export default function Settings() {
               type="url"
               value={feedUrl}
               onChange={e => setFeedUrl(e.target.value)}
-              placeholder="https://www.cargurus.com/Cars/inventorylisting/..."
+              placeholder="https://www.cars.com/dealers/1234/your-dealer/inventory/"
               className="w-full px-4 py-3 rounded-xl bg-surface-950/50 border border-surface-800/50 text-surface-200 text-sm placeholder-surface-700 focus:border-brand-500/50 focus:outline-none transition-colors"
             />
           </div>
