@@ -104,31 +104,58 @@ module.exports = function createAiRouter(prisma) {
         vehicle.vin && `VIN: ${vehicle.vin}`,
       ].filter(Boolean).join('\n');
 
+      const fbColors = ['Black', 'Blue', 'Brown', 'Gold', 'Green', 'Grey', 'Pink', 'Purple', 'Red', 'Silver', 'Orange', 'White', 'Yellow', 'Charcoal', 'Off white', 'Tan', 'Beige', 'Burgundy', 'Turquoise'];
+
       const client = new Anthropic({ apiKey });
       const response = await client.messages.create({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 500,
+        max_tokens: 600,
         messages: [{
           role: 'user',
-          content: `Write a Facebook Marketplace vehicle listing description that will SELL this car fast. Use proven techniques that work on FB Marketplace:
+          content: `You have TWO tasks. Respond in this EXACT JSON format and nothing else:
+{"description": "your listing text here", "exteriorColor": "closest FB color", "interiorColor": "closest FB color"}
 
-- Start with an attention-grabbing opening line (e.g. "Don't miss this one!" or "Priced to move!")
-- Highlight the top 3-4 selling points (low miles, clean title, one owner, great condition, fuel economy, etc.)
-- Use short punchy sentences - FB buyers scan quickly
-- Include a sense of urgency (e.g. "Won't last at this price")
-- End with a clear call to action (e.g. "Message me today for a test drive!")
-- Add "Financing available. Trade-ins welcome." at the end
-- Include the VIN if available
-- Keep it 5-8 lines max. No hashtags. No emojis. No price (it goes in a separate field).
-- Do NOT use any markdown formatting. No # headers, no ** bold **, no bullet points. Write plain text only.
+TASK 1 — Write a Facebook Marketplace vehicle listing description:
+- Attention-grabbing opening (e.g. "Don't miss this one!")
+- Top 3-4 selling points (low miles, clean title, condition, fuel economy)
+- Short punchy sentences — FB buyers scan quickly
+- Urgency (e.g. "Won't last at this price")
+- Call to action (e.g. "Message me today for a test drive!")
+- Add "Financing available. Trade-ins welcome."
+- Include VIN if available
+- 5-8 lines max. No hashtags. No emojis. No price. No markdown. Plain text only.
+
+TASK 2 — Match the vehicle's colors to Facebook Marketplace dropdown options.
+Facebook only allows these colors: ${fbColors.join(', ')}
+- For exteriorColor: map "${vehicle.color || 'unknown'}" to the closest FB color from the list above.
+- For interiorColor: based on the vehicle (${vehicle.year} ${vehicle.make} ${vehicle.model} ${vehicle.trim || ''}), pick the most likely interior color. Most cars have Black interiors, but luxury/light-colored cars often have Grey, Beige, or Tan.
 
 Vehicle details:
-${vehicleInfo}`,
+${vehicleInfo}
+
+RESPOND WITH ONLY THE JSON OBJECT. No explanation.`,
         }],
       });
 
-      const desc = response.content[0].text.trim().replace(/^#+\s*/gm, '');
-      res.json({ description: desc || null });
+      const rawText = response.content[0].text.trim();
+      let parsed = null;
+      try {
+        const jsonStart = rawText.indexOf('{');
+        const jsonEnd = rawText.lastIndexOf('}');
+        if (jsonStart !== -1 && jsonEnd > jsonStart) {
+          parsed = JSON.parse(rawText.slice(jsonStart, jsonEnd + 1));
+        }
+      } catch {}
+
+      const desc = parsed?.description || rawText.replace(/^#+\s*/gm, '').replace(/^\{.*\}$/s, '').trim();
+      const extColor = fbColors.includes(parsed?.exteriorColor) ? parsed.exteriorColor : null;
+      const intColor = fbColors.includes(parsed?.interiorColor) ? parsed.interiorColor : null;
+
+      res.json({
+        description: desc || null,
+        exteriorColor: extColor,
+        interiorColor: intColor,
+      });
     } catch (error) {
       console.error('[ai] generate-fb-description error:', error.message);
       res.json({ description: null });

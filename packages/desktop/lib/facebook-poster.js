@@ -1157,6 +1157,17 @@ class FacebookPoster {
         vin: vehicle.vin,
       },
     });
+
+    // Store AI-determined colors for use during form filling
+    if (response?.exteriorColor) {
+      this._aiExteriorColor = response.exteriorColor;
+      this.log(` AI exterior color: ${response.exteriorColor}`);
+    }
+    if (response?.interiorColor) {
+      this._aiInteriorColor = response.interiorColor;
+      this.log(` AI interior color: ${response.interiorColor}`);
+    }
+
     const desc = typeof response?.description === 'string' ? response.description.trim() : '';
     if (!desc) {
       this.log(' AI description generation failed via cloud API');
@@ -1383,7 +1394,10 @@ class FacebookPoster {
     // --- DROPDOWN: Exterior colour (most types except Other) ---
     if (hasDropdown('Exterior colour', 'Exterior color')) {
       this.log('Setting Exterior color...');
-      const extColor = this.matchColorToFB(vehicle.exteriorColor || vehicle.exterior_color || vehicle.color);
+      // AI color (from description call) > heuristic mapping
+      const extColor = this._aiExteriorColor
+        || this.matchColorToFB(vehicle.exteriorColor || vehicle.exterior_color || vehicle.color);
+      this.log(` Using exterior color: ${extColor}${this._aiExteriorColor ? ' (AI)' : ' (heuristic)'}`);
       if (await this.selectDropdown(['Exterior colour', 'Exterior color'], extColor)) {
         fieldsFound++;
       } else { fieldsMissed++; }
@@ -1393,9 +1407,10 @@ class FacebookPoster {
     // --- DROPDOWN: Interior colour (Car/van, Power sport, Motorhome, Trailer, Boat, Commercial) ---
     if (hasDropdown('Interior colour', 'Interior color')) {
       this.log('Setting Interior color...');
-      // Interior color isn't in the feed data — use Black or Grey as safe defaults
-      // (most car interiors are black, grey, or beige)
-      const intColor = this.matchColorToFB(vehicle.interiorColor || vehicle.interior_color || 'Black');
+      // AI color (from description call) > heuristic > default Black
+      const intColor = this._aiInteriorColor
+        || this.matchColorToFB(vehicle.interiorColor || vehicle.interior_color || 'Black');
+      this.log(` Using interior color: ${intColor}${this._aiInteriorColor ? ' (AI)' : ' (heuristic)'}`);
       if (await this.selectDropdown(['Interior colour', 'Interior color'], intColor)) {
         fieldsFound++;
       } else { fieldsMissed++; }
