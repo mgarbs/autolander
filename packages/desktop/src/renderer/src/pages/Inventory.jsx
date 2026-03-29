@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useInventory } from '../hooks/useInventory';
-import { markVehicleSold } from '../api/client';
+import { markVehicleSold, getFeeds, syncFeed, syncFeedHtml } from '../api/client';
 import Badge from '../components/Badge';
 import FilterDropdown from '../components/FilterDropdown';
 import {
@@ -12,7 +12,8 @@ import {
   Share2,
   AlertCircle,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  RefreshCw
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 
@@ -26,6 +27,7 @@ function formatPrice(price) {
 export default function Inventory() {
   const { inventory, loading, refresh } = useInventory();
   const [searchQuery, setSearchQuery] = useState('');
+  const [syncing, setSyncing] = useState(false);
   const [filterMake, setFilterMake] = useState('All');
   const [filterBody, setFilterBody] = useState('All');
   const [filterStatus, setFilterStatus] = useState('All');
@@ -122,6 +124,36 @@ export default function Inventory() {
         </div>
         
         <div className="flex items-center gap-3">
+          <button
+            onClick={async () => {
+              if (syncing) return;
+              setSyncing(true);
+              try {
+                const feedsData = await getFeeds();
+                const feeds = feedsData.feeds || feedsData || [];
+                const feed = feeds[0];
+                if (!feed) { alert('No feed configured'); return; }
+                if (window.autolander?.fetchFeedHtml) {
+                  const fetchResult = await window.autolander.fetchFeedHtml(feed.feedUrl);
+                  if (fetchResult.success && fetchResult.html) {
+                    await syncFeedHtml(feed.id, fetchResult.html);
+                  }
+                } else {
+                  await syncFeed(feed.id);
+                }
+                refresh();
+              } catch (e) {
+                console.error('Sync failed:', e.message);
+              } finally {
+                setSyncing(false);
+              }
+            }}
+            disabled={syncing}
+            className="flex items-center gap-2 px-4 py-2.5 bg-surface-900 border border-surface-800 rounded-xl text-xs font-bold text-surface-400 hover:text-white hover:border-brand-500/50 transition-all active:scale-95 disabled:opacity-60"
+          >
+            <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
+            {syncing ? 'Syncing...' : 'Sync Inventory'}
+          </button>
           <div className="relative group">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-surface-600 group-focus-within:text-brand-500 transition-colors" />
             <input
